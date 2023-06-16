@@ -58,6 +58,7 @@ type configContents struct {
 	OTelMetrics          OTelMetricsConfig         `yaml:"OTelMetrics"`
 	PeerManagement       PeerManagementConfig      `yaml:"PeerManagement"`
 	RedisPeerManagement  RedisPeerManagementConfig `yaml:"RedisPeerManagement"`
+	DnsPeerManagement    DnsPeerManagementConfig   `yaml:"DnsPeerManagement"`
 	Collection           CollectionConfig          `yaml:"Collection"`
 	BufferSizes          BufferSizeConfig          `yaml:"BufferSizes"`
 	Specialized          SpecializedConfig         `yaml:"Specialized"`
@@ -65,6 +66,11 @@ type configContents struct {
 	GRPCServerParameters GRPCServerParameters      `yaml:"GRPCServerParameters"`
 	SampleCache          SampleCacheConfig         `yaml:"SampleCache"`
 	StressRelief         StressReliefConfig        `yaml:"StressRelief"`
+}
+
+type DnsPeerManagementConfig struct {
+	LookupAddr string `yaml:"lookupAddr"`
+	RemotePort int    `yaml:"remotePort"`
 }
 
 type GeneralConfig struct {
@@ -464,6 +470,20 @@ func (f *fileConfig) GetPeerManagementType() (string, error) {
 	defer f.mux.RUnlock()
 
 	return f.mainConfig.PeerManagement.Type, nil
+}
+
+func (f *fileConfig) GetDnsLookupAddr() (string, error) {
+	f.mux.RLock()
+	defer f.mux.RUnlock()
+
+	return f.mainConfig.DnsPeerManagement.LookupAddr, nil
+}
+
+func (f *fileConfig) GetDnsRemotePort() (int, error) {
+	f.mux.RLock()
+	defer f.mux.RUnlock()
+
+	return f.mainConfig.DnsPeerManagement.RemotePort, nil
 }
 
 func (f *fileConfig) GetPeers() ([]string, error) {
