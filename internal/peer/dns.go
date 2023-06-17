@@ -21,24 +21,29 @@ func newDnsPeers(c config.Config, done chan struct{}) (Peers, error) {
 	peers := &dnsPeers{
 		c: c,
 	}
-	err := peers.getFromDns()
+	peerList, err := peers.getFromDns()
 	if err != nil {
 		return nil, err
 	}
+
+	peers.peerLock.Lock()
+	peers.peers = peerList
+	peers.peerLock.Unlock()
+
 	go peers.watchPeers(done)
 
 	return peers, nil
 }
 
-func (p *dnsPeers) getFromDns() error {
+func (p *dnsPeers) getFromDns() ([]string, error) {
 	lookupAddr, err := p.c.GetDnsLookupAddr()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ips, err := net.LookupIP(lookupAddr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var addrs []string
@@ -46,17 +51,13 @@ func (p *dnsPeers) getFromDns() error {
 	for _, ip := range ips {
 		port, err := p.c.GetDnsRemotePort()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
 		addrs = append(addrs, addr)
 	}
 
-	p.peerLock.Lock()
-	p.peers = addrs
-	p.peerLock.Unlock()
-
-	return nil
+	return addrs, nil
 }
 
 func (p *dnsPeers) GetPeers() ([]string, error) {
@@ -75,7 +76,7 @@ func (p *dnsPeers) watchPeers(done chan struct{}) {
 	for {
 		select {
 		case <-tk.C:
-			currentPeers, err := p.GetPeers()
+			currentPeers, err := p.getFromDns()
 			if err != nil {
 				logrus.WithError(err).
 					WithFields(logrus.Fields{
