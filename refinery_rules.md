@@ -1,12 +1,10 @@
-# Honeycomb Refinery Rules Documentation
+## Refinery Rules file
 
-This is the documentation for the rules configuration for Honeycomb's Refinery.
-It was automatically generated on 2023-07-11 at 16:32:35 UTC.
+The Refinery `rules` file is a YAML file.
 
-## The Rules file
+## Example
 
-The rules file is a YAML file.
-Here is a simple example of a rules file:
+Here is a simple example of a `rules` file:
 
 ```yaml
 RulesVersion: 2
@@ -24,39 +22,23 @@ Samplers:
                 - response.status_code
 ```
 
-Name: `RulesVersion`
+where:
 
-This is a required parameter used to verify the version of the rules file.
-It must be set to 2.
+`RulesVersion` is a required parameter used to verify the version of the rules file.
+It must be set to `2`.
 
-Name: `Samplers`
-
-Samplers is a mapping of targets to samplers.
-Each target is a Honeycomb environment (or, for classic keys, a dataset).
+`Samplers` maps targets to sampler configurations. Each target is a Honeycomb environment (or a dataset for Honeycomb Classic keys).
 The value is the sampler to use for that target.
-The target called `__default__` will be used for any target that is not explicitly listed.
 A `__default__` target is required.
+The target called `__default__` will be used for any target that is not explicitly listed.
+
 The targets are determined by examining the API key used to send the trace.
-If the API key is a 'classic' key (which is a 32-character hexadecimal value), the specified dataset name is used as the target.
-If the API key is a new-style key (20-23 alphanumeric characters), the key's environment name is used as the target.
+If the API key is a Honeycomb Classic key with a 32-character hexadecimal value, then the specified dataset name is used as the target.
+If the API key is a key with 20-23 alphanumeric characters, then the key's environment name is used as the target.
 
-The remainder of this document describes the samplers that can be used within the `Samplers` section and the fields that control their behavior.
+The remainder of this page describes the samplers that can be used within the `Samplers` section and the fields that control their behavior.
 
-## Table of Contents
-- [Deterministic Sampler](#deterministic-sampler)
-- [Dynamic Sampler](#dynamic-sampler)
-- [EMA Dynamic Sampler](#ema-dynamic-sampler)
-- [EMA Throughput Sampler](#ema-throughput-sampler)
-- [Windowed Throughput Sampler](#windowed-throughput-sampler)
-- [Rules-based Sampler](#rules-based-sampler)
-- [Rules for Rules-based Samplers](#rules-for-rules-based-samplers)
-- [Conditions for the Rules in Rules-based Samplers](#conditions-for-the-rules-in-rules-based-samplers)
-- [Total Throughput Sampler](#total-throughput-sampler)
-
----
 ## Deterministic Sampler
-
-### Name: `DeterministicSampler`
 
 The Deterministic Sampler (`DeterministicSampler`) uses a fixed sample rate to sample traces based on their trace ID.
 This is the simplest sampling algorithm - it is a static sample rate, choosing traces randomly to either keep or send (at the appropriate rate).
@@ -70,12 +52,9 @@ For example, a `SampleRate` of `30`  will keep 1 out of every 30 traces.
 The choice on whether to keep any specific trace is random, so the rate is approximate.
 The sample rate is calculated from the trace ID, so all spans with the same trace ID will be sampled or not sampled together.
 
-Type: `int`
+- Type: `int`
 
----
 ## Dynamic Sampler
-
-### Name: `DynamicSampler`
 
 The Dynamic Sampler (`DynamicSampler`) is the basic Dynamic Sampler implementation.
 Most installations will find the EMA Dynamic Sampler to be a better choice.
@@ -92,7 +71,7 @@ For example, a `SampleRate` of `30`  will keep 1 out of every 30 traces.
 The choice on whether to keep any specific trace is random, so the rate is approximate.
 The sample rate is calculated from the trace ID, so all spans with the same trace ID will be sampled or not sampled together.
 
-Type: `int`
+- Type: `int`
 
 ### `ClearFrequency`
 
@@ -100,7 +79,7 @@ The duration after which the Dynamic Sampler should reset its internal counters.
 It should be specified as a duration string.
 For example, "30s" or "1m".
 
-Type: `duration`
+- Type: `duration`
 
 ### `FieldList`
 
@@ -116,7 +95,7 @@ In contrast, for example, consider as a bad set of fields: a combination of `HTT
 For example, rather than a set of fields, using only the `HTTP endpoint` field is a **bad** choice, as it is not unique enough, and therefore interesting traces, like traces that experienced a `500`, might not be sampled.
 Field names may come from any span in the trace; if they occur on multiple spans, then all unique values will be included in the key.
 
-Type: `stringarray`
+- Type: `stringarray`
 
 ### `MaxKeys`
 
@@ -125,7 +104,7 @@ Once `MaxKeys` is reached, new keys will not be included in the sample rate map,
 Use this field to keep the sample rate map size under control.
 Defaults to `500`; Dynamic Samplers will rarely achieve their sampling goals with more keys than this.
 
-Type: `int`
+- Type: `int`
 
 ### `UseTraceLength`
 
@@ -133,12 +112,9 @@ Indicates whether to include the trace length (number of spans in the trace) as 
 The number of spans is exact, so if there are normally small variations in trace length, we recommend setting this field to `false`.
 If your traces are consistent lengths and changes in trace length is a useful indicator to view in Honeycomb, then set this field to `true`.
 
-Type: `bool`
+- Type: `bool`
 
----
 ## EMA Dynamic Sampler
-
-### Name: `EMADynamicSampler`
 
 The Exponential Moving Average (EMA) Dynamic Sampler (`EMADynamicSampler`) attempts to average a given sample rate, weighting rare traffic and frequent traffic differently so as to end up with the correct average.
 `EMADynamicSampler` is an improvement upon the simple `DynamicSampler` and is recommended for many use cases.
@@ -158,7 +134,7 @@ For example, a `SampleRate` of `30`  will keep 1 out of every 30 traces.
 The choice on whether to keep any specific trace is random, so the rate is approximate.
 The sample rate is calculated from the trace ID, so all spans with the same trace ID will be sampled or not sampled together.
 
-Type: `int`
+- Type: `int`
 
 ### `AdjustmentInterval`
 
@@ -166,7 +142,7 @@ The duration after which the EMA Dynamic Sampler should recalculate its internal
 It should be specified as a duration string.
 For example, "30s" or "1m".
 
-Type: `duration`
+- Type: `duration`
 
 ### `Weight`
 
@@ -175,7 +151,7 @@ It should be a number between `0` and `1`.
 Larger values weight the average more toward recent observations.
 In other words, a larger weight will cause sample rates more quickly adapt to traffic patterns, while a smaller weight will result in sample rates that are less sensitive to bursts or drops in traffic and thus more consistent over time.
 
-Type: `float`
+- Type: `float`
 
 ### `AgeOutValue`
 
@@ -185,7 +161,7 @@ Keys with averages below this threshold will be removed from the EMA.
 Default is the same as `Weight`, as this prevents a key with the smallest integer value (1) from being aged out immediately.
 This value should generally be less than (<=) `Weight`, unless you have very specific reasons to set it higher.
 
-Type: `float`
+- Type: `float`
 
 ### `BurstMultiple`
 
@@ -194,14 +170,14 @@ If total counts observed for a given interval exceed this threshold, then EMA is
 Defaults to `2`; a negative value disables.
 With the default of `2`, if your traffic suddenly doubles, then burst detection will kick in.
 
-Type: `float`
+- Type: `float`
 
 ### `BurstDetectionDelay`
 
 Indicates the number of intervals to run before burst detection kicks in.
 Defaults to `3`.
 
-Type: `int`
+- Type: `int`
 
 ### `FieldList`
 
@@ -217,7 +193,7 @@ In contrast, for example, consider as a bad set of fields: a combination of `HTT
 For example, rather than a set of fields, using only the `HTTP endpoint` field is a **bad** choice, as it is not unique enough, and therefore interesting traces, like traces that experienced a `500`, might not be sampled.
 Field names may come from any span in the trace; if they occur on multiple spans, then all unique values will be included in the key.
 
-Type: `stringarray`
+- Type: `stringarray`
 
 ### `MaxKeys`
 
@@ -226,7 +202,7 @@ Once `MaxKeys` is reached, new keys will not be included in the sample rate map,
 Use this field to keep the sample rate map size under control.
 Defaults to `500`; Dynamic Samplers will rarely achieve their sampling goals with more keys than this.
 
-Type: `int`
+- Type: `int`
 
 ### `UseTraceLength`
 
@@ -234,12 +210,9 @@ Indicates whether to include the trace length (number of spans in the trace) as 
 The number of spans is exact, so if there are normally small variations in trace length, we recommend setting this field to `false`.
 If your traces are consistent lengths and changes in trace length is a useful indicator to view in Honeycomb, then set this field to `true`.
 
-Type: `bool`
+- Type: `bool`
 
----
 ## EMA Throughput Sampler
-
-### Name: `EMAThroughputSampler`
 
 The Exponential Moving Average (EMA) Throughput Sampler (`EMAThroughputSampler`) attempts to achieve a given throughput -- number of spans per second -- weighting rare traffic and frequent traffic differently so as to end up with the correct rate.
 The `EMAThroughputSampler` is an improvement upon the Total Throughput Sampler and is recommended for most throughput-based use cases.
@@ -257,14 +230,14 @@ This is the number of events per second you want to send to Honeycomb.
 The sampler will adjust sample rates to try to achieve this desired throughput.
 This value is calculated for the individual instance, not for the cluster; if your cluster has multiple instances, then you will need to divide your total desired sample rate by the number of instances to get this value.
 
-Type: `int`
+- Type: `int`
 
 ### `InitialSampleRate`
 
 `InitialSampleRate` is the sample rate to use during startup, before the sampler has accumulated enough data to calculate a reasonable throughput.
 This is mainly useful in situations where unsampled throughput is high enough to cause problems.
 
-Type: `int`
+- Type: `int`
 
 ### `AdjustmentInterval`
 
@@ -272,7 +245,7 @@ The duration after which the EMA Dynamic Sampler should recalculate its internal
 It should be specified as a duration string.
 For example, "30s" or "1m".
 
-Type: `duration`
+- Type: `duration`
 
 ### `Weight`
 
@@ -281,7 +254,7 @@ It should be a number between `0` and `1`.
 Larger values weight the average more toward recent observations.
 In other words, a larger weight will cause sample rates more quickly adapt to traffic patterns, while a smaller weight will result in sample rates that are less sensitive to bursts or drops in traffic and thus more consistent over time.
 
-Type: `float`
+- Type: `float`
 
 ### `AgeOutValue`
 
@@ -291,7 +264,7 @@ Keys with averages below this threshold will be removed from the EMA.
 Default is the same as `Weight`, as this prevents a key with the smallest integer value (1) from being aged out immediately.
 This value should generally be less than (<=) `Weight`, unless you have very specific reasons to set it higher.
 
-Type: `float`
+- Type: `float`
 
 ### `BurstMultiple`
 
@@ -300,14 +273,14 @@ If total counts observed for a given interval exceed this threshold, then EMA is
 Defaults to `2`; a negative value disables.
 With the default of `2`, if your traffic suddenly doubles, then burst detection will kick in.
 
-Type: `float`
+- Type: `float`
 
 ### `BurstDetectionDelay`
 
 Indicates the number of intervals to run before burst detection kicks in.
 Defaults to `3`.
 
-Type: `int`
+- Type: `int`
 
 ### `FieldList`
 
@@ -323,7 +296,7 @@ In contrast, for example, consider as a bad set of fields: a combination of `HTT
 For example, rather than a set of fields, using only the `HTTP endpoint` field is a **bad** choice, as it is not unique enough, and therefore interesting traces, like traces that experienced a `500`, might not be sampled.
 Field names may come from any span in the trace; if they occur on multiple spans, then all unique values will be included in the key.
 
-Type: `stringarray`
+- Type: `stringarray`
 
 ### `MaxKeys`
 
@@ -332,7 +305,7 @@ Once `MaxKeys` is reached, new keys will not be included in the sample rate map,
 Use this field to keep the sample rate map size under control.
 Defaults to `500`; Dynamic Samplers will rarely achieve their sampling goals with more keys than this.
 
-Type: `int`
+- Type: `int`
 
 ### `UseTraceLength`
 
@@ -340,12 +313,9 @@ Indicates whether to include the trace length (number of spans in the trace) as 
 The number of spans is exact, so if there are normally small variations in trace length, we recommend setting this field to `false`.
 If your traces are consistent lengths and changes in trace length is a useful indicator to view in Honeycomb, then set this field to `true`.
 
-Type: `bool`
+- Type: `bool`
 
----
 ## Windowed Throughput Sampler
-
-### Name: `WindowedThroughputSampler`
 
 Windowed Throughput Sampler (`WindowedThroughputSampler`) is an enhanced version of total throughput sampling.
 Just like the `TotalThroughput` Sampler, `WindowedThroughputSampler` attempts to meet the goal of fixed number of events per second sent to Honeycomb.
@@ -370,7 +340,7 @@ This is the number of events per second you want to send to Honeycomb.
 The sampler will adjust sample rates to try to achieve this desired throughput.
 This value is calculated for the individual instance, not for the cluster; if your cluster has multiple instances, then you will need to divide your total desired sample rate by the number of instances to get this value.
 
-Type: `int`
+- Type: `int`
 
 ### `UpdateFrequency`
 
@@ -378,7 +348,7 @@ The duration between sampling rate computations.
 It should be specified as a duration string.
 For example, "30s" or "1m".
 
-Type: `duration`
+- Type: `duration`
 
 ### `LookbackFrequency`
 
@@ -386,7 +356,7 @@ This controls how far back in time to lookback to dynamically adjust the samplin
 Default is `30 * UpdateFrequencyDuration`.
 This field is forced to be an **integer multiple** of `UpdateFrequencyDuration`.
 
-Type: `duration`
+- Type: `duration`
 
 ### `FieldList`
 
@@ -402,7 +372,7 @@ In contrast, for example, consider as a bad set of fields: a combination of `HTT
 For example, rather than a set of fields, using only the `HTTP endpoint` field is a **bad** choice, as it is not unique enough, and therefore interesting traces, like traces that experienced a `500`, might not be sampled.
 Field names may come from any span in the trace; if they occur on multiple spans, then all unique values will be included in the key.
 
-Type: `stringarray`
+- Type: `stringarray`
 
 ### `MaxKeys`
 
@@ -411,7 +381,7 @@ Once `MaxKeys` is reached, new keys will not be included in the sample rate map,
 Use this field to keep the sample rate map size under control.
 Defaults to `500`; Dynamic Samplers will rarely achieve their sampling goals with more keys than this.
 
-Type: `int`
+- Type: `int`
 
 ### `UseTraceLength`
 
@@ -419,12 +389,9 @@ Indicates whether to include the trace length (number of spans in the trace) as 
 The number of spans is exact, so if there are normally small variations in trace length, we recommend setting this field to `false`.
 If your traces are consistent lengths and changes in trace length is a useful indicator to view in Honeycomb, then set this field to `true`.
 
-Type: `bool`
+- Type: `bool`
 
----
 ## Rules-based Sampler
-
-### Name: `RulesBasedSampler`
 
 The Rules-based sampler allows you to specify a set of rules that will determine whether a trace should be sampled or not.
 Rules are evaluated in order, and the first rule that matches will be used to determine the sample rate.
@@ -435,7 +402,7 @@ Rules-based samplers will usually be configured to have the last rule be a defau
 
 `Rules` is a list of rules to use to determine the sample rate.
 
-Type: `objectarray`
+- Type: `objectarray`
 
 ### `CheckNestedFields`
 
@@ -445,12 +412,9 @@ If `true`, nested JSON will be expanded into a `map[string]interface{}` and the 
 For example, if you have a field called `http.request.headers` and you want to check the value of the `User-Agent` header, then you would set this to `true` and use `http.request.headers.User-Agent` as the field name in your rule.
 This is a computationally expensive option and may cause performance problems if you have a large number of spans with nested JSON.
 
-Type: `bool`
+- Type: `bool`
 
----
 ## Rules for Rules-based Samplers
-
-### Name: `Rules`
 
 Rules are evaluated in order, and the first rule that matches will be used to determine the sample rate.
 If no rules match, then the `SampleRate` will be `1` and all traces will be kept.
@@ -461,7 +425,7 @@ If a rule matches, one of three things happens, and they are evaluated in this o
 The name of the rule.
 This field is used for debugging and will appear in the trace metadata if `AddRuleReasonToTrace` is set to `true`.
 
-Type: `string`
+- Type: `string`
 
 ### `Sampler`
 
@@ -469,7 +433,7 @@ The sampler to use if the rule matches.
 If this is set, the sample rate will be determined by this downstream sampler.
 If this is not set, the sample rate will be determined by the `Drop` flag or the `SampleRate` field.
 
-Type: `object`
+- Type: `object`
 
 ### `Drop`
 
@@ -477,13 +441,13 @@ Indicates whether to drop the trace if it matches this rule.
 If `true`, then the trace will be dropped.
 If `false`, then the trace will be kept.
 
-Type: `bool`
+- Type: `bool`
 
 ### `SampleRate`
 
 If the rule is matched, there is no Sampler specified, and the `Drop` flag is `false`, then this is the sample rate to use.
 
-Type: `int`
+- Type: `int`
 
 ### `Conditions`
 
@@ -492,7 +456,7 @@ All conditions must be met for the rule to match.
 If there are no conditions, then the rule will always match.
 A no-condition rule is typically used for the last rule to provide a default behavior.
 
-Type: `objectarray`
+- Type: `objectarray`
 
 ### `Scope`
 
@@ -500,12 +464,9 @@ Controls the scope of the rule evaluation.
 If set to "trace" (the default), then each condition can apply to any span in the trace independently.
 If set to "span", then all of the conditions in the rule will be evaluated against each span in the trace and the rule only succeeds if all of the conditions match on a single span together.
 
-Type: `string`
+- Type: `string`
 
----
 ## Conditions for the Rules in Rules-based Samplers
-
-### Name: `Conditions`
 
 Conditions are evaluated in order, and the first condition that does not match will cause the rule to not match.
 If all conditions match, then the rule will match.
@@ -518,21 +479,21 @@ This can be any field in the trace.
 If the field is not present, then the condition will not match.
 The comparison is case-sensitive.
 
-Type: `string`
+- Type: `string`
 
 ### `Operator`
 
 The comparison operator to use.
 String comparisons are case-sensitive.
 
-Type: `string`
+- Type: `string`
 
 ### `Value`
 
 The value to compare against.
 If `Datatype` is not specified, then the value and the field will be compared based on the type of the field.
 
-Type: `anyscalar`
+- Type: `anyscalar`
 
 ### `Datatype`
 
@@ -541,12 +502,9 @@ If `Datatype` is specified, then both values will be converted (best-effort) to 
 Errors in conversion will result in the comparison evaluating to `false`.
 This is especially useful when a field like `http status code` may be rendered as strings by some environments and as numbers or booleans by others.
 
-Type: `string`
+- Type: `string`
 
----
 ## Total Throughput Sampler
-
-### Name: `TotalThroughputSampler`
 
 Total Throughput Sampler (`TotalThroughputSampler`) attempts to meet a goal of a fixed number of events per second sent to Honeycomb.
 This sampler is **deprecated** and present mainly for compatibility.
@@ -563,7 +521,7 @@ The desired throughput per second of events sent to Honeycomb.
 This is the number of events per second you want to send.
 This is not the same as the Sample Rate.
 
-Type: `int`
+- Type: `int`
 
 ### `ClearFrequency`
 
@@ -571,7 +529,7 @@ The duration after which the Dynamic Sampler should reset its internal counters.
 It should be specified as a duration string.
 For example, "30s" or "1m".
 
-Type: `duration`
+- Type: `duration`
 
 ### `FieldList`
 
@@ -587,7 +545,7 @@ In contrast, for example, consider as a bad set of fields: a combination of `HTT
 For example, rather than a set of fields, using only the `HTTP endpoint` field is a **bad** choice, as it is not unique enough, and therefore interesting traces, like traces that experienced a `500`, might not be sampled.
 Field names may come from any span in the trace; if they occur on multiple spans, then all unique values will be included in the key.
 
-Type: `stringarray`
+- Type: `stringarray`
 
 ### `MaxKeys`
 
@@ -596,7 +554,7 @@ Once `MaxKeys` is reached, new keys will not be included in the sample rate map,
 Use this field to keep the sample rate map size under control.
 Defaults to `500`; Dynamic Samplers will rarely achieve their sampling goals with more keys than this.
 
-Type: `int`
+- Type: `int`
 
 ### `UseTraceLength`
 
@@ -604,5 +562,5 @@ Indicates whether to include the trace length (number of spans in the trace) as 
 The number of spans is exact, so if there are normally small variations in trace length, we recommend setting this field to `false`.
 If your traces are consistent lengths and changes in trace length is a useful indicator to view in Honeycomb, then set this field to `true`.
 
-Type: `bool`
+- Type: `bool`
 

@@ -37,10 +37,6 @@ type DefaultTransmission struct {
 	Version    string          `inject:"version"`
 	LibhClient *libhoney.Client
 
-	// This has to exist to fool the injection system into making sure this shows up later
-	// than metrics on the injection graph. Have I mentioned how much I hate injection systems?
-	FakeMetrics metrics.Metrics `inject:"metrics"`
-
 	// Type is peer or upstream, and used only for naming metrics
 	Name string
 
@@ -104,7 +100,7 @@ func (d *DefaultTransmission) EnqueueEvent(ev *types.Event) {
 		WithString("api_host", ev.APIHost).
 		WithString("dataset", ev.Dataset).
 		Logf("transmit sending event")
-	libhEv := d.builder.NewEvent()
+	libhEv := d.builder.NewEventSized(len(ev.Data))
 	libhEv.APIHost = ev.APIHost
 	libhEv.WriteKey = ev.APIKey
 	libhEv.Dataset = ev.Dataset

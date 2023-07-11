@@ -1,18 +1,19 @@
 package config
 
 import (
+	"errors"
 	"strings"
 )
 
 type Level int
 
 const (
-	DebugLevel Level = iota
+	UnknownLevel Level = iota
+	DebugLevel
 	InfoLevel
 	WarnLevel
 	ErrorLevel
 	PanicLevel
-	UnknownLevel // unknown should be higher than everything
 )
 
 func ParseLevel(s string) Level {
@@ -52,4 +53,12 @@ func (l Level) String() string {
 
 func (l Level) MarshalText() ([]byte, error) {
 	return []byte(l.String()), nil
+}
+
+func (l *Level) UnmarshalText(text []byte) error {
+	*l = ParseLevel(string(text))
+	if *l == UnknownLevel {
+		return errors.New("unknown logging level '" + string(text) + "'")
+	}
+	return nil
 }

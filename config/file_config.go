@@ -3,8 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +29,148 @@ func (d *Duration) UnmarshalText(text []byte) error {
 		return err
 	}
 	*d = Duration(dur)
+	return nil
+}
+
+const (
+	K = uint64(1000)
+	M = 1000 * K
+	G = 1000 * M
+	T = 1000 * G
+	P = 1000 * T
+	E = 1000 * P
+
+	Ki = uint64(1024)
+	Mi = 1024 * Ki
+	Gi = 1024 * Mi
+	Ti = 1024 * Gi
+	Pi = 1024 * Ti
+	Ei = 1024 * Pi
+
+	invalidSizeError = "invalid size: %s"
+)
+
+var unitSlice = []uint64{
+	Ei,
+	E,
+	Pi,
+	P,
+	Ti,
+	T,
+	Gi,
+	G,
+	Mi,
+	M,
+	Ki,
+	K,
+	1,
+}
+
+var reverseUnitMap = map[uint64]string{
+	Ki: "Ki",
+	Mi: "Mi",
+	Gi: "Gi",
+	Ti: "Ti",
+	Pi: "Pi",
+	Ei: "Ei",
+	K:  "K",
+	M:  "M",
+	G:  "G",
+	T:  "T",
+	P:  "P",
+	E:  "E",
+}
+
+var unitMap = map[string]uint64{
+	"bi":  1,
+	"bib": 1,
+	"ki":  Ki,
+	"kib": Ki,
+	"mi":  Mi,
+	"mib": Mi,
+	"gi":  Gi,
+	"gib": Gi,
+	"ti":  Ti,
+	"tib": Ti,
+	"pi":  Pi,
+	"pib": Pi,
+	"ei":  Ei,
+	"eib": Ei,
+	"b":   1,
+	"bb":  1,
+	"k":   K,
+	"kb":  K,
+	"m":   M,
+	"mb":  M,
+	"g":   G,
+	"gb":  G,
+	"t":   T,
+	"tb":  T,
+	"p":   P,
+	"pb":  P,
+	"e":   E,
+	"eb":  E,
+}
+
+// We also use a special type for memory sizes
+type MemorySize uint64
+
+func (m MemorySize) MarshalText() ([]byte, error) {
+	if m > 0 {
+		for _, size := range unitSlice {
+			result := float64(m) / float64(size)
+			if result == math.Trunc(result) {
+				unit, ok := reverseUnitMap[size]
+				if !ok {
+					break
+				}
+				return []byte(fmt.Sprintf("%v%v", result, unit)), nil
+			}
+		}
+	}
+	return []byte(fmt.Sprintf("%v", m)), nil
+}
+
+func (m *MemorySize) UnmarshalText(text []byte) error {
+	txt := string(text)
+
+	r := regexp.MustCompile("(?P<number>[0-9]+)(?P<unit>[a-zA-Z]*)")
+	matches := r.FindStringSubmatch(strings.ToLower(txt))
+	if matches == nil {
+		return fmt.Errorf(invalidSizeError, txt)
+	}
+
+	var number uint64
+	var unit string
+	var err error
+	for i, name := range r.SubexpNames() {
+		if i == 0 {
+			continue
+		}
+
+		switch name {
+		case "number":
+			number, err = strconv.ParseUint(matches[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf(invalidSizeError, text)
+			}
+		case "unit":
+			unit = matches[i]
+		default:
+			return fmt.Errorf("error converting %v to MemorySize, this is a bug with Refinery", text)
+		}
+	}
+
+	// No unit means bytes
+	if unit == "" {
+		*m = MemorySize(number)
+	} else {
+		scalar, ok := unitMap[unit]
+		if !ok {
+			return fmt.Errorf(invalidSizeError, text)
+		}
+		*m = MemorySize(number * scalar)
+	}
 	return nil
 }
 
@@ -115,7 +260,7 @@ type DebuggingConfig struct {
 
 type LoggerConfig struct {
 	Type  string `yaml:"Type" default:"stdout"`
-	Level Level  `yaml:"Level" default:"Warn"`
+	Level Level  `yaml:"Level" default:"warn"`
 }
 
 type HoneycombLoggerConfig struct {
@@ -173,9 +318,17 @@ type RedisPeerManagementConfig struct {
 
 type CollectionConfig struct {
 	// CacheCapacity must be less than math.MaxInt32
-	CacheCapacity int    `yaml:"CacheCapacity" default:"10_000"`
-	MaxMemory     int    `yaml:"MaxMemory" default:"75"`
-	MaxAlloc      uint64 `yaml:"MaxAlloc"`
+	CacheCapacity       int        `yaml:"CacheCapacity" default:"10_000"`
+	AvailableMemory     MemorySize `yaml:"AvailableMemory" cmdenv:"AvailableMemory"`
+	MaxMemoryPercentage int        `yaml:"MaxMemoryPercentage" default:"75"`
+	MaxAlloc            MemorySize `yaml:"MaxAlloc"`
+}
+
+func (c CollectionConfig) GetMaxAlloc() MemorySize {
+	if c.AvailableMemory == 0 || c.MaxMemoryPercentage == 0 {
+		return c.MaxAlloc
+	}
+	return c.AvailableMemory * MemorySize(c.MaxMemoryPercentage) / 100
 }
 
 type BufferSizeConfig struct {
@@ -198,7 +351,7 @@ type IDFieldsConfig struct {
 // by refinery's own GRPC server:
 // https://pkg.go.dev/google.golang.org/grpc/keepalive#ServerParameters
 type GRPCServerParameters struct {
-	Enabled               bool     `yaml:"Enabled"`
+	Enabled               bool     `yaml:"Enabled" default:"true"`
 	ListenAddr            string   `yaml:"ListenAddr" cmdenv:"GRPCListenAddr"`
 	MaxConnectionIdle     Duration `yaml:"MaxConnectionIdle" default:"1m"`
 	MaxConnectionAge      Duration `yaml:"MaxConnectionAge" default:"3m"`
@@ -262,7 +415,7 @@ func (e *FileConfigError) Error() string {
 func newFileConfig(opts *CmdEnv) (*fileConfig, error) {
 	// If we're not validating, skip this part
 	if !opts.NoValidate {
-		cfgFails, err := validateConfig(opts.ConfigLocation)
+		cfgFails, err := validateConfig(opts)
 		if err != nil {
 			return nil, err
 		}
@@ -349,7 +502,9 @@ func NewConfig(opts *CmdEnv, errorCallback func(error)) (Config, error) {
 	cfg.callbacks = make([]func(), 0)
 	cfg.errorCallback = errorCallback
 
-	go cfg.monitor()
+	if cfg.mainConfig.General.ConfigReloadInterval > 0 {
+		go cfg.monitor()
+	}
 
 	return cfg, err
 }
@@ -390,9 +545,13 @@ func (f *fileConfig) monitor() {
 
 // Stop halts the monitor goroutine
 func (f *fileConfig) Stop() {
-	f.ticker.Stop()
-	close(f.done)
-	f.done = nil
+	if f.ticker != nil {
+		f.ticker.Stop()
+	}
+	if f.done != nil {
+		close(f.done)
+		f.done = nil
+	}
 }
 
 func (f *fileConfig) RegisterReloadCallback(cb func()) {
@@ -429,6 +588,12 @@ func (f *fileConfig) GetCompressPeerCommunication() bool {
 	defer f.mux.RUnlock()
 
 	return f.mainConfig.Specialized.CompressPeerCommunication
+}
+
+func (f *fileConfig) GetGRPCEnabled() bool {
+	f.mux.RLock()
+	defer f.mux.RUnlock()
+	return f.mainConfig.GRPCServerParameters.Enabled
 }
 
 func (f *fileConfig) GetGRPCListenAddr() (string, error) {
@@ -591,14 +756,6 @@ func (f *fileConfig) GetHoneycombLoggerConfig() (HoneycombLoggerConfig, error) {
 	return f.mainConfig.HoneycombLogger, nil
 }
 
-// TODO: DEPRECATED
-func (f *fileConfig) GetCollectorType() (string, error) {
-	f.mux.RLock()
-	defer f.mux.RUnlock()
-
-	return "InMemCollector", nil
-}
-
 func (f *fileConfig) GetAllSamplerRules() (*V2SamplerConfig, error) {
 	f.mux.RLock()
 	defer f.mux.RUnlock()
@@ -632,19 +789,11 @@ func (f *fileConfig) GetSamplerConfigForDestName(destname string) (any, string, 
 	return cfg, name, err
 }
 
-func (f *fileConfig) GetInMemCollectorCacheCapacity() (CollectionConfig, error) {
+func (f *fileConfig) GetCollectionConfig() (CollectionConfig, error) {
 	f.mux.RLock()
 	defer f.mux.RUnlock()
 
 	return f.mainConfig.Collection, nil
-}
-
-// TODO: REMOVE THIS
-func (f *fileConfig) GetMetricsType() (string, error) {
-	f.mux.RLock()
-	defer f.mux.RUnlock()
-
-	return "", nil
 }
 
 func (f *fileConfig) GetLegacyMetricsConfig() LegacyMetricsConfig {
@@ -733,14 +882,6 @@ func (f *fileConfig) GetIsDryRun() bool {
 	defer f.mux.RUnlock()
 
 	return f.mainConfig.Debugging.DryRun
-}
-
-// TODO: DEPRECATED
-func (f *fileConfig) GetDryRunFieldName() string {
-	f.mux.RLock()
-	defer f.mux.RUnlock()
-
-	return "meta.refinery.dryrun.kept"
 }
 
 func (f *fileConfig) GetAddHostMetadataToTrace() bool {
@@ -832,14 +973,6 @@ func (f *fileConfig) GetAddSpanCountToRoot() bool {
 	defer f.mux.RUnlock()
 
 	return f.mainConfig.Telemetry.AddSpanCountToRoot
-}
-
-// TODO: DEPRECATE
-func (f *fileConfig) GetCacheOverrunStrategy() string {
-	f.mux.RLock()
-	defer f.mux.RUnlock()
-
-	return "impact"
 }
 
 func (f *fileConfig) GetSampleCacheConfig() SampleCacheConfig {

@@ -56,7 +56,60 @@ The remainder of this document describes the samplers that can be used within th
 
 {{ range $file.Groups -}}
 {{- if gt .SortOrder 0 -}}
-{{- template "rules_docgroup.tmpl" . -}}
+{{- template "rules_sitegroup" . -}}
 {{- end -}}
 {{- end -}}
 {{- println -}}
+
+{{- define "rules_sitegroup" -}}
+{{- $group := . -}}
+---
+## {{ $group.Title }}
+
+### Name: `{{ $group.Name }}`
+
+{{ $group.Description | wrapForDocs }}
+{{- println -}}
+{{- println -}}
+
+{{- if $group.Fields -}}
+{{- println -}}
+{{- end -}}
+
+{{- range $group.Fields -}}
+{{- if .LastVersion -}}
+  {{- continue -}}
+{{- end -}}
+{{ template "rules_sitefield" . }}
+{{- end -}}
+
+{{- end -}}
+{{- define "rules_sitefield" -}}
+{{- $field := . -}}
+
+### `{{ $field.Name }}`
+
+{{ if $field.Description -}}
+{{ $field.Description | wrapForDocs }}
+
+{{- else -}}
+{{ printf "%s %s" $field.Name $field.Summary }}
+
+{{- end }}
+
+Type: `{{ $field.Type }}`
+
+{{ if $field.Default -}}
+Default: `{{ $field.Default }}`
+
+{{- end }}
+{{ if $field.Example -}}
+Example: `{{ $field.Example }}`
+
+{{- end }}
+{{ if eq $field.ValueType "choice" -}}
+{{ printf "Options: %s" (join $field.Choices " ") }}
+
+{{- end }}
+{{- println -}}
+{{- end -}}

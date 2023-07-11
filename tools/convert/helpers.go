@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/honeycombio/refinery/config"
 	"html/template"
 	"regexp"
 	"strings"
@@ -28,6 +29,7 @@ func helpers() template.FuncMap {
 		"indentRest":        indentRest,
 		"join":              join,
 		"makeSlice":         makeSlice,
+		"memorysize":        memorysize,
 		"meta":              meta,
 		"nonDefaultOnly":    nonDefaultOnly,
 		"nonEmptyString":    nonEmptyString,
@@ -107,6 +109,14 @@ func conditional(data map[string]any, key string, extra string) string {
 				return fmt.Sprintf("%s: true", key)
 			}
 		}
+	case "nonempty":
+		k := extras[1]
+		if value, ok := _fetch(data, k); ok {
+			v := fmt.Sprintf("%v", value)
+			if v != "" {
+				return fmt.Sprintf("%s: true", key)
+			}
+		}
 	default:
 		panic("Unknown conditional: " + extra)
 	}
@@ -156,6 +166,23 @@ func join(a []string, sep string) string {
 
 func makeSlice(a ...string) []string {
 	return a
+}
+
+// memorysize takes a memory size (if the previous value had it) and returns a string representation
+// of memory size in human-readable form.
+func memorysize(data map[string]any, key, oldkey string, example string) string {
+	i64 := int64(0)
+	if value, ok := _fetch(data, oldkey); ok && value != "" {
+		switch i := value.(type) {
+		case int64:
+			i64 = i
+		case int:
+			i64 = int64(i)
+		}
+		txt, _ := config.MemorySize(i64).MarshalText()
+		return fmt.Sprintf(`%s: %s`, key, string(txt))
+	}
+	return fmt.Sprintf(`# %s: %v`, key, yamlf(example))
 }
 
 func meta(s string) string {
@@ -256,7 +283,7 @@ func renderMap(data map[string]any, key, oldkey string, example string) string {
 func renderStringarray(data map[string]any, key, oldkey string, example string) string {
 	var sa []string
 	comment := ""
-	if v, ok := data[key]; ok {
+	if v, ok := _fetch(data, oldkey); ok {
 		switch value := v.(type) {
 		case []interface{}:
 			for _, s := range value {
@@ -392,7 +419,14 @@ func yamlf(a any) string {
 		if pat.MatchString(v) {
 			return v
 		}
-		return fmt.Sprintf(`"%s"`, v)
+		hasSingleQuote := strings.Contains(v, "'")
+		hasDoubleQuote := strings.Contains(v, `"`)
+		switch {
+		case hasDoubleQuote && !hasSingleQuote:
+			return fmt.Sprintf(`'%s'`, v)
+		default:
+			return fmt.Sprintf("%#v", v)
+		}
 	case int:
 		return _formatIntWithUnderscores(v)
 	case float64:

@@ -12,18 +12,20 @@ require (
 	github.com/gomodule/redigo v1.8.9
 	github.com/gorilla/mux v1.8.0
 	github.com/hashicorp/golang-lru v0.5.4
-	github.com/honeycombio/dynsampler-go v0.5.0
+	github.com/honeycombio/dynsampler-go v0.5.1
 	github.com/honeycombio/husky v0.22.4
-	github.com/honeycombio/libhoney-go v1.18.0
+	github.com/honeycombio/libhoney-go v1.20.0
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/json-iterator/go v1.1.12
-	github.com/klauspost/compress v1.16.5
+	github.com/klauspost/compress v1.16.7
 	github.com/panmari/cuckoofilter v1.0.3
 	github.com/pelletier/go-toml/v2 v2.0.8
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.15.1
+	github.com/pyroscope-io/godeltaprof v0.1.1
 	github.com/rcrowley/go-metrics v0.0.0-20200313005456-10cdbea86bc0
-	github.com/sirupsen/logrus v1.9.2
+	github.com/sirupsen/logrus v1.9.3
+	github.com/sourcegraph/conc v0.3.0
 	github.com/stretchr/testify v1.8.4
 	github.com/tidwall/gjson v1.14.4
 	github.com/vmihailenco/msgpack/v4 v4.3.11
@@ -35,8 +37,8 @@ require (
 	go.opentelemetry.io/proto/otlp v0.19.0
 	go.uber.org/automaxprocs v1.5.2
 	golang.org/x/exp v0.0.0-20230321023759-10a507213a29
-	google.golang.org/grpc v1.55.0
-	google.golang.org/protobuf v1.30.0
+	google.golang.org/grpc v1.56.1
+	google.golang.org/protobuf v1.31.0
 	gopkg.in/alexcesaro/statsd.v2 v2.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -61,7 +63,6 @@ require (
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect
-	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect
@@ -70,11 +71,15 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/internal/retry v1.16.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric v0.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.16.0 // indirect
-	golang.org/x/net v0.8.0 // indirect
+	go.uber.org/atomic v1.7.0 // indirect
+	go.uber.org/multierr v1.9.0 // indirect
+	golang.org/x/net v0.9.0 // indirect
 	golang.org/x/sys v0.8.0 // indirect
-	golang.org/x/text v0.8.0 // indirect
+	golang.org/x/text v0.9.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4 // indirect
+	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 )
 
 replace go.opentelemetry.io/proto/otlp => github.com/honeycombio/opentelemetry-proto-go/otlp v0.19.0-compat
+
+replace github.com/panmari/cuckoofilter => github.com/honeycombio/cuckoofilter v0.0.0-20230630225016-cf48793fb7c1

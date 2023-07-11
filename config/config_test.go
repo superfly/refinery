@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -67,7 +68,7 @@ func makeYAML(args ...interface{}) string {
 
 func TestGRPCListenAddrEnvVar(t *testing.T) {
 	const address = "127.0.0.1:4317"
-	const envVarName = "REFINERY_GRPC_LISTEN_ADDR"
+	const envVarName = "REFINERY_GRPC_LISTEN_ADDRESS"
 	os.Setenv(envVarName, address)
 	defer os.Unsetenv(envVarName)
 
@@ -129,7 +130,7 @@ func TestMetricsAPIKeyEnvVar(t *testing.T) {
 	}{
 		{
 			name:   "Specific env var",
-			envVar: "REFINERY_LEGACY_METRICS_API_KEY",
+			envVar: "REFINERY_HONEYCOMB_METRICS_API_KEY",
 			key:    "abc123",
 		},
 		{
@@ -158,7 +159,7 @@ func TestMetricsAPIKeyEnvVar(t *testing.T) {
 
 func TestMetricsAPIKeyMultipleEnvVar(t *testing.T) {
 	const specificKey = "abc123"
-	const specificEnvVarName = "REFINERY_LEGACY_METRICS_API_KEY"
+	const specificEnvVarName = "REFINERY_HONEYCOMB_METRICS_API_KEY"
 	const fallbackKey = "this should not be set in the config"
 	const fallbackEnvVarName = "REFINERY_HONEYCOMB_API_KEY"
 
@@ -250,6 +251,33 @@ func TestReload(t *testing.T) {
 
 }
 
+func TestReloadDisabled(t *testing.T) {
+	cm := makeYAML("General.ConfigurationVersion", 2, "General.ConfigReloadInterval", Duration(0*time.Second), "Network.ListenAddr", "0.0.0.0:8080")
+	rm := makeYAML("ConfigVersion", 2)
+	config, rules := createTempConfigs(t, cm, rm)
+	defer os.Remove(rules)
+	defer os.Remove(config)
+	c, err := getConfig([]string{"--no-validate", "--config", config, "--rules_config", rules})
+	assert.NoError(t, err)
+
+	if d, _ := c.GetListenAddr(); d != "0.0.0.0:8080" {
+		t.Error("received", d, "expected", "0.0.0.0:8080")
+	}
+
+	if file, err := os.OpenFile(config, os.O_RDWR, 0644); err == nil {
+		// Since we disabled reload checking this should not change anything
+		cm := makeYAML("General.ConfigurationVersion", 2, "General.ConfigReloadInterval", Duration(0*time.Second), "Network.ListenAddr", "0.0.0.0:9000")
+		file.WriteString(cm)
+		file.Close()
+	}
+
+	time.Sleep(5 * time.Second)
+
+	if d, _ := c.GetListenAddr(); d != "0.0.0.0:8080" {
+		t.Error("received", d, "expected", "0.0.0.0:8080")
+	}
+}
+
 func TestReadDefaults(t *testing.T) {
 	c, err := getConfig([]string{"--no-validate", "--config", "../config.yaml", "--rules_config", "../rules.yaml"})
 	assert.NoError(t, err)
@@ -276,10 +304,6 @@ func TestReadDefaults(t *testing.T) {
 
 	if d := c.GetIsDryRun(); d != false {
 		t.Error("received", d, "expected", false)
-	}
-
-	if d := c.GetDryRunFieldName(); d != "meta.refinery.dryrun.kept" {
-		t.Error("received", d, "expected", "meta.refinery.dryrun.kept")
 	}
 
 	if d := c.GetAddHostMetadataToTrace(); d != false {
@@ -408,8 +432,8 @@ func TestMaxAlloc(t *testing.T) {
 	c, err := getConfig([]string{"--no-validate", "--config", config, "--rules_config", rules})
 	assert.NoError(t, err)
 
-	expected := uint64(16 * 1024 * 1024 * 1024)
-	inMemConfig, err := c.GetInMemCollectorCacheCapacity()
+	expected := MemorySize(16 * 1024 * 1024 * 1024)
+	inMemConfig, err := c.GetCollectionConfig()
 	assert.NoError(t, err)
 	assert.Equal(t, expected, inMemConfig.MaxAlloc)
 }
@@ -575,6 +599,8 @@ func TestGRPCServerParameters(t *testing.T) {
 		"GRPCServerParameters.MaxConnectionAgeGrace", "3m",
 		"GRPCServerParameters.KeepAlive", "4m",
 		"GRPCServerParameters.KeepAliveTimeout", "5m",
+		"GRPCServerParameters.ListenAddr", "localhost:4317",
+		"GRPCServerParameters.Enabled", true,
 	)
 	rm := makeYAML("ConfigVersion", 2)
 	config, rules := createTempConfigs(t, cm, rm)
@@ -588,6 +614,10 @@ func TestGRPCServerParameters(t *testing.T) {
 	assert.Equal(t, 3*time.Minute, c.GetGRPCMaxConnectionAgeGrace())
 	assert.Equal(t, 4*time.Minute, c.GetGRPCKeepAlive())
 	assert.Equal(t, 5*time.Minute, c.GetGRPCKeepAliveTimeout())
+	assert.Equal(t, true, c.GetGRPCEnabled())
+	addr, err := c.GetGRPCListenAddr()
+	assert.NoError(t, err)
+	assert.Equal(t, "localhost:4317", addr)
 }
 
 func TestHoneycombAdditionalErrorConfig(t *testing.T) {
@@ -699,4 +729,225 @@ func TestHoneycombIdFieldsConfigDefault(t *testing.T) {
 
 	assert.Equal(t, []string{"trace.trace_id", "traceId"}, c.GetTraceIdFieldNames())
 	assert.Equal(t, []string{"trace.parent_id", "parentId"}, c.GetParentIdFieldNames())
+}
+
+func TestMemorySizeUnmarshal(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected MemorySize
+	}{
+		{
+			name:     "single letter",
+			input:    "1G",
+			expected: 1000 * 1000 * 1000,
+		},
+		{
+			name:     "B included",
+			input:    "1GB",
+			expected: 1000 * 1000 * 1000,
+		},
+		{
+			name:     "iB included",
+			input:    "1GiB",
+			expected: 1024 * 1024 * 1024,
+		},
+		{
+			name:     "k8s format",
+			input:    "1Gi",
+			expected: 1024 * 1024 * 1024,
+		},
+		{
+			name:     "single letter lowercase",
+			input:    "1g",
+			expected: 1000 * 1000 * 1000,
+		},
+		{
+			name:     "b included lowercase",
+			input:    "1gb",
+			expected: 1000 * 1000 * 1000,
+		},
+		{
+			name:     "ib included  lowercase",
+			input:    "1gib",
+			expected: 1024 * 1024 * 1024,
+		},
+		{
+			name:     "k8s format lowercase",
+			input:    "1gi",
+			expected: 1024 * 1024 * 1024,
+		},
+		{
+			name:     "bytes",
+			input:    "100000",
+			expected: 100000,
+		},
+		{
+			name:     "b",
+			input:    "1b",
+			expected: 1,
+		},
+		{
+			name:     "bi",
+			input:    "1Bi",
+			expected: 1,
+		},
+		{
+			name:     "k",
+			input:    "1K",
+			expected: 1000,
+		},
+		{
+			name:     "ki",
+			input:    "1Ki",
+			expected: 1024,
+		},
+		{
+			name:     "m",
+			input:    "1M",
+			expected: 1000 * 1000,
+		},
+		{
+			name:     "mi",
+			input:    "1Mi",
+			expected: 1024 * 1024,
+		},
+		{
+			name:     "t",
+			input:    "1T",
+			expected: 1000 * 1000 * 1000 * 1000,
+		},
+		{
+			name:     "ti",
+			input:    "1Ti",
+			expected: 1024 * 1024 * 1024 * 1024,
+		},
+		{
+			name:     "p",
+			input:    "1p",
+			expected: 1000 * 1000 * 1000 * 1000 * 1000,
+		},
+		{
+			name:     "pi",
+			input:    "1pi",
+			expected: 1024 * 1024 * 1024 * 1024 * 1024,
+		},
+		{
+			name:     "e",
+			input:    "1e",
+			expected: 1000 * 1000 * 1000 * 1000 * 1000 * 1000,
+		},
+		{
+			name:     "ei",
+			input:    "1ei",
+			expected: 1024 * 1024 * 1024 * 1024 * 1024 * 1024,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m MemorySize
+			err := m.UnmarshalText([]byte(tt.input))
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, m)
+		})
+	}
+}
+
+func TestMemorySizeUnmarshalInvalid(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "no number",
+			input: "G",
+		},
+		{
+			name:  "invalid unit",
+			input: "1A",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m MemorySize
+			err := m.UnmarshalText([]byte(tt.input))
+			assert.Contains(t, err.Error(), fmt.Sprintf(invalidSizeError, tt.input))
+		})
+	}
+}
+
+func TestMemorySizeMarshal(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    MemorySize
+		expected string
+	}{
+		{
+			name:     "zero",
+			input:    0,
+			expected: "0",
+		},
+		{
+			name:     "ei",
+			input:    MemorySize(3 * Ei),
+			expected: "3Ei",
+		},
+		{
+			name:     "e",
+			input:    MemorySize(3 * E),
+			expected: "3E",
+		},
+		{
+			name:     "pi",
+			input:    MemorySize(3 * Pi),
+			expected: "3Pi",
+		},
+		{
+			name:     "p",
+			input:    MemorySize(3 * P),
+			expected: "3P",
+		},
+		{
+			name:     "gi",
+			input:    MemorySize(3 * Gi),
+			expected: "3Gi",
+		},
+		{
+			name:     "g",
+			input:    MemorySize(3 * G),
+			expected: "3G",
+		},
+		{
+			name:     "mi",
+			input:    MemorySize(3 * Mi),
+			expected: "3Mi",
+		},
+		{
+			name:     "m",
+			input:    MemorySize(3 * M),
+			expected: "3M",
+		},
+		{
+			name:     "ki",
+			input:    MemorySize(3 * Ki),
+			expected: "3Ki",
+		},
+		{
+			name:     "k",
+			input:    MemorySize(3 * K),
+			expected: "3K",
+		},
+		{
+			name:     "b",
+			input:    MemorySize(3),
+			expected: "3",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := tt.input.MarshalText()
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, string(result))
+		})
+	}
 }

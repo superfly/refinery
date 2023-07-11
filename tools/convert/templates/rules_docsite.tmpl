@@ -1,0 +1,87 @@
+{{- $file := . -}}
+## Refinery Rules file
+
+The Refinery `rules` file is a YAML file.
+
+## Example
+
+Here is a simple example of a `rules` file:
+
+```yaml
+RulesVersion: 2
+Samplers:
+    __default__:
+        DeterministicSampler:
+            SampleRate: 1
+    production:
+        DynamicSampler:
+            SampleRate: 2
+            ClearFrequency: 30s
+            FieldList:
+                - request.method
+                - http.target
+                - response.status_code
+```
+
+where:
+
+`RulesVersion` is a required parameter used to verify the version of the rules file.
+It must be set to `2`.
+
+`Samplers` maps targets to sampler configurations. Each target is a Honeycomb environment (or a dataset for Honeycomb Classic keys).
+The value is the sampler to use for that target.
+A `__default__` target is required.
+The target called `__default__` will be used for any target that is not explicitly listed.
+
+The targets are determined by examining the API key used to send the trace.
+If the API key is a Honeycomb Classic key with a 32-character hexadecimal value, then the specified dataset name is used as the target.
+If the API key is a key with 20-23 alphanumeric characters, then the key's environment name is used as the target.
+
+The remainder of this page describes the samplers that can be used within the `Samplers` section and the fields that control their behavior.
+
+{{ range $file.Groups -}}
+{{- if gt .SortOrder 0 -}}
+{{- template "rules_sitegroup" . -}}
+{{- end -}}
+{{- end -}}
+{{- println -}}
+{{- define "rules_sitegroup" -}}
+{{- $group := . -}}
+
+## {{ $group.Title }}
+
+{{ $group.Description | wrapForDocs }}
+{{- println -}}
+
+{{- range $group.Fields -}}
+{{- if .LastVersion -}}
+  {{- continue -}}
+{{- end -}}
+{{ template "rules_sitefield" . }}
+{{- end -}}
+
+{{- end -}}
+{{- define "rules_sitefield" -}}
+{{- $field := . -}}
+### `{{ $field.Name }}`
+
+{{ if $field.Description -}}
+{{ $field.Description | wrapForDocs }}
+{{- else -}}
+{{ printf "%s %s" $field.Name $field.Summary }}
+
+{{- end }}
+- Type: `{{ $field.Type }}`
+{{ if $field.Default -}}
+- Default: `{{ $field.Default }}`
+{{- end }}
+{{- if $field.Example -}}
+- Example: `{{ $field.Example }}`
+{{- println -}}
+{{- end -}}
+{{- if eq $field.ValueType "choice" -}}
+- {{ printf "Options: %s" (join $field.Choices " ") }}
+{{- println -}}
+{{- end }}
+{{- println -}}
+{{- end -}}

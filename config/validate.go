@@ -136,6 +136,17 @@ func validateDatatype(k string, v any, typ string) string {
 		if _, err := time.ParseDuration(v.(string)); err != nil {
 			return fmt.Sprintf("field %s (%v) must be a valid duration like '3m30s' or '100ms'", k, v)
 		}
+	case "memorysize":
+		if !isString(v) {
+			// we support pure numbers here, so if it's not already a string, then stringize it
+			v = fmt.Sprintf("%v", v)
+		}
+		var m MemorySize
+		// When validating we need to take advantage of the custom logic in MemorySize.UnmarshalText
+		err := m.UnmarshalText([]byte(v.(string)))
+		if err != nil {
+			return fmt.Sprintf("field %s (%v) must be a valid memory size like '1Gb' or '100_000_000'", k, v)
+		}
 	case "hostport":
 		if !isString(v) {
 			return fmt.Sprintf("field %s must be a hostport", k)
@@ -171,6 +182,13 @@ func validateDatatype(k string, v any, typ string) string {
 		panic("unknown data type " + typ)
 	}
 	return ""
+}
+
+func maskString(s string) string {
+	if len(s) < 4 {
+		return "****"
+	}
+	return "****" + s[len(s)-4:]
 }
 
 // Validate checks that the given data is valid according to the metadata.
@@ -240,10 +258,12 @@ func (m *Metadata) Validate(data map[string]any) []string {
 			case "format":
 				var pat *regexp.Regexp
 				var format string
+				mask := false
 				switch validation.Arg.(string) {
 				case "apikey":
 					pat = regexp.MustCompile(`^[a-f0-9]{32}|[a-zA-Z0-9]{20,23}$`)
-					format = "field %s (%v) must be a Honeycomb API key"
+					format = "field %s (%v) must be a valid Honeycomb API key"
+					mask = true
 				case "version":
 					pat = regexp.MustCompile(`^v[0-9]+\.[0-9]+$`)
 					format = "field %s (%v) must be a valid major.minor version number, like v2.0"
@@ -254,6 +274,9 @@ func (m *Metadata) Validate(data map[string]any) []string {
 					panic("unknown pattern type " + validation.Arg.(string))
 				}
 				if !(isString(v) && pat.MatchString(v.(string))) {
+					if mask {
+						v = maskString(v.(string))
+					}
 					errors = append(errors, fmt.Sprintf(format, k, v))
 				}
 			case "minimum":
