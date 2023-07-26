@@ -198,7 +198,6 @@ jobs:
           command: |
             set -x
 
-            export TAG="$(test "${CIRCLE_BRANCH}" == "main" && echo "" || echo "branch-")${BUILD_ID}"
             export ECR_HOST=702835727665.dkr.ecr.us-east-1.amazonaws.com
             export KO_DOCKER_REPO=${ECR_HOST}
 
@@ -247,7 +246,7 @@ workflows:
             - build_docker
           filters:
             branches:
-              only: main
+              ignore: /pull\/.*/
       - publish_github:
           context: Honeycomb Secrets for Public Repos
           requires:
