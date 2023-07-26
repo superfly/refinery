@@ -1,0 +1,36 @@
+General:
+  ConfigurationVersion: 2
+  MinRefineryVersion: v2.0
+Network:
+  ListenAddr: "[::]:8194"
+  PeerListenAddr: "[::]:8193"
+  HoneycombAPI: "https://api.honeycomb.io"
+RefineryTelemetry:
+  AddRuleReasonToTrace: true
+  AddHostMetadataToTrace: true
+  AddSpanCountToRoot: true
+PeerManagement:
+  Type: fly-dns
+Debugging:
+  DryRun: true
+Logger:
+  Type: "stdout"
+  Level: "warn"
+GRPCServerParameters:
+  Enabled: true
+  ListenAddr: "[::]:8192"
+  MaxConnectionIdle: "30s"
+Collection:
+  AvailableMemory: 2GiB
+  MaxMemoryPercentage: 80
+  MaxAlloc: 1717600000 # 80% of 2GiB
+  CacheCapacity: 10000
+IDFields:
+  TraceNames:
+    - trace.trace_id
+    - TraceId
+    - traceId
+  ParentNames:
+    - trace.parent_id
+    - ParentId
+    - parentId

@@ -1,0 +1,63 @@
+app = "flyio-refinery"
+primary_region = "iad"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8192
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 8192
+    handlers = []
+
+
+  [services.concurrency]
+  soft_limit = 8192
+  hard_limit = 10240
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8193
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 8193
+    handlers = [ "http" ]
+    force_https = false
+
+  [services.concurrency]
+  soft_limit = 8192
+  hard_limit = 10240
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8194
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 0
+
+  [[services.ports]]
+    port = 8194
+    handlers = []
+
+  [[services.http_checks]]
+  grace_period = "10s"
+  interval = "30s"
+  protocol = "http"
+  tls_skip_verify = true
+  method = "GET"
+  timeout = "5s"
+  path = "/alive"
+
+  [[services.http_checks]]
+  grace_period = "10s"
+  interval = "30s"
+  protocol = "http"
+  tls_skip_verify = true
+  method = "GET"
+  timeout = "5s"
+  path = "/x/alive"

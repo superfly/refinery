@@ -23,5 +23,8 @@ RUN CGO_ENABLED=0 \
 FROM scratch
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-
 COPY --from=builder /app/refinery /usr/bin/refinery
+COPY --from=builder /app/refinery.yaml .
+COPY --from=builder /app/rules.yaml .
+
+CMD [ "refinery", "-c", "refinery.yaml", "-r", "rules.yaml" ]
