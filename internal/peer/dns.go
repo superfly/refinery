@@ -1,13 +1,22 @@
 package peer
 
 import (
-	"github.com/honeycombio/refinery/config"
-	"github.com/sirupsen/logrus"
+	"fmt"
 	"net"
+	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/honeycombio/refinery/config"
+	"github.com/sirupsen/logrus"
+)
+
+var (
+	internalAddr string = fmt.Sprintf("%s.flyio-refinery.internal", os.Getenv("FLY_REGION"))
+	peerPort int = 8193
 )
 
 type dnsPeers struct {
@@ -36,25 +45,18 @@ func newDnsPeers(c config.Config, done chan struct{}) (Peers, error) {
 }
 
 func (p *dnsPeers) getFromDns() ([]string, error) {
-	lookupAddr, err := p.c.GetDnsLookupAddr()
-	if err != nil {
-		return nil, err
-	}
-
-	ips, err := net.LookupIP(lookupAddr)
+	ips, err := net.LookupIP(internalAddr)
 	if err != nil {
 		return nil, err
 	}
 
 	var addrs []string
-
 	for _, ip := range ips {
-		port, err := p.c.GetDnsRemotePort()
-		if err != nil {
-			return nil, err
+		addr := url.URL{
+			Scheme:      "http",
+			Host:        net.JoinHostPort(ip.String(), strconv.Itoa(peerPort)),
 		}
-		addr := net.JoinHostPort(ip.String(), strconv.Itoa(port))
-		addrs = append(addrs, addr)
+		addrs = append(addrs, addr.String())
 	}
 
 	return addrs, nil
