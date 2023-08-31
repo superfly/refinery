@@ -13,7 +13,9 @@ Samplers:
           Drop: true
         - Name: dynamic sampler
           Conditions:
-            - Field: rpc.name
+            - Field: rpc.service
+              Operator: exists
+            - Field: rpc.method
               Operator: exists
             - Field: host.id
               Operator: exists
@@ -32,6 +34,7 @@ Samplers:
               FieldList:
                 - host.id
                 - cloud.region
-                - rpc.name
+                - rpc.service
+                - rpc.method
         - Name: default
           SampleRate: 1
