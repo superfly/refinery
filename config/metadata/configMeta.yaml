@@ -60,19 +60,20 @@ groups:
       - name: ConfigReloadInterval
         type: duration
         valuetype: nondefault
-        default: 5m
+        default: 15s
         reload: false
         validations:
           - type: minimum
             arg: 0s
         summary: is the average interval between attempts at reloading the configuration file.
         description: >
-          A single instance of Refinery will attempt to read its configuration
-          and check for changes at approximately this interval. This time is
-          varied by a random amount to avoid all instances refreshing together.
-          Within a cluster, Refinery will gossip information about new
-          configuration so that all instances can reload at close to the same
-          time. Disable this feature with a value of `0s`.
+          Refinery will attempt to read its configuration and check for changes
+          at approximately this interval. This time is varied by a random amount
+          up to 10% to avoid all instances refreshing together. In installations
+          where configuration changes are handled by restarting Refinery, which
+          is often the case when using Kubernetes, disable this feature with a
+          value of `0s`. If the config file is being loaded from a URL, it may
+          be wise to increase this value to avoid overloading the file server.
 
   - name: Network
     title: "Network Configuration"
@@ -160,8 +161,7 @@ groups:
           accepted. Events arriving with API keys not in the `ReceiveKeys` list
           will be rejected with an HTTP `401` error.
 
-          If `false`, then all traffic is accepted and `ReceiveKeys` is
-          ignored. Must be specified if `ReceiveKeys` is specified.
+          If `false`, then all traffic is accepted and `ReceiveKeys` is ignored.
 
   - name: RefineryTelemetry
     title: "Refinery Telemetry"
@@ -178,7 +178,18 @@ groups:
           When enabled, this setting causes traces that are sent to Honeycomb
           to include the field `meta.refinery.reason`. This field contains text
           indicating which rule was evaluated that caused the trace to be
-          included. We recommend enabling this setting whenever a rules-based
+          included.
+
+          This setting also includes the field `meta.refinery.send_reason`,
+          which contains the reason that the trace was sent. Possible values of
+          this field are `trace_send_got_root`, which means that the root span
+          arrived; `trace_send_expired`, which means that TraceTimeout was reached;
+          `trace_send_ejected_full`, which means that the trace cache was full; and
+          `trace_send_ejected_memsize`, which means that refinery was out of memory.
+
+          These names are also the names of metrics that refinery tracks.
+
+          We recommend enabling this setting whenever a rules-based
           sampler is in use, as it is useful for debugging and understanding
           the behavior of your Refinery installation.
 
@@ -615,7 +626,7 @@ groups:
         validations:
           - type: format
             arg: apikey
-        envvar: REFINERY_METRICS_OTEL_API_KEY, HONEYCOMB_API_KEY
+        envvar: REFINERY_OTEL_METRICS_API_KEY, HONEYCOMB_API_KEY
         commandline: otel-metrics-api-key
         firstversion: v2.0
         summary: is the API key used to send Honeycomb metrics via OpenTelemetry.
@@ -936,8 +947,9 @@ groups:
           not set, then `MaxMemory` cannot be used to calculate the maximum
           allocation and `MaxAlloc` will be used instead. If set, then this must
           be a memory size. 64-bit values are supported. Sizes with standard
-          unit suffixes (`MB`, `GiB`, etc.) and Kubernetes units (`M`, `Gi`, 
-          etc.) are also supported.
+          unit suffixes (`MB`, `GiB`, etc.) and Kubernetes units (`M`, `Gi`,
+          etc.) are also supported. If set, `Collections.MaxAlloc` must not be
+          defined.
 
       - name: MaxMemoryPercentage
         type: percentage
@@ -959,7 +971,6 @@ groups:
           allocated bytes to this calculated value. If allocation is too high,
           then traces will be ejected from the cache early to reduce memory.
           Useful values for this setting are generally in the range of 70-90.
-          If this value is `0`, then `MaxAlloc` will be used.
 
       - name: MaxAlloc
         v1group: InMemCollector
@@ -968,11 +979,15 @@ groups:
         valuetype: memorysize
         default: 0
         reload: true
+        validatons:
+          - type: conflictsWith
+            arg: AvailableMemory
         summary: is the maximum number of bytes that should be allocated by the Collector.
         description: >
           If set, then this must be a memory size. 64-bit values are supported.
           Sizes with standard unit suffixes (`MB`, `GiB`, etc) and Kubernetes units
           (`M`, `Gi`, etc) are also supported. See `MaxMemory` for more details.
+          If set, `Collections.AvailableMemory` must not be defined.
 
   - name: BufferSizes
     title: "Buffer Sizes"

@@ -63,14 +63,14 @@ When Refinery receives telemetry using an API key associated with a Honeycomb Cl
 
 `ConfigReloadInterval` is the average interval between attempts at reloading the configuration file.
 
-A single instance of Refinery will attempt to read its configuration and check for changes at approximately this interval.
-This time is varied by a random amount to avoid all instances refreshing together.
-Within a cluster, Refinery will gossip information about new configuration so that all instances can reload at close to the same time.
-Disable this feature with a value of `0s`.
+Refinery will attempt to read its configuration and check for changes at approximately this interval.
+This time is varied by a random amount up to 10% to avoid all instances refreshing together.
+In installations where configuration changes are handled by restarting Refinery, which is often the case when using Kubernetes, disable this feature with a value of `0s`.
+If the config file is being loaded from a URL, it may be wise to increase this value to avoid overloading the file server.
 
 - Not eligible for live reload.
 - Type: `duration`
-- Default: `5m`
+- Default: `15s`
 
 ## Network Configuration
 
@@ -135,7 +135,6 @@ This list only applies to span traffic - other Honeycomb API actions will be pro
 If `true`, then only traffic using the keys listed in `ReceiveKeys` is accepted.
 Events arriving with API keys not in the `ReceiveKeys` list will be rejected with an HTTP `401` error.
 If `false`, then all traffic is accepted and `ReceiveKeys` is ignored.
-Must be specified if `ReceiveKeys` is specified.
 
 - Eligible for live reload.
 - Type: `bool`
@@ -150,6 +149,9 @@ Must be specified if `ReceiveKeys` is specified.
 
 When enabled, this setting causes traces that are sent to Honeycomb to include the field `meta.refinery.reason`.
 This field contains text indicating which rule was evaluated that caused the trace to be included.
+This setting also includes the field `meta.refinery.send_reason`, which contains the reason that the trace was sent.
+Possible values of this field are `trace_send_got_root`, which means that the root span arrived; `trace_send_expired`, which means that TraceTimeout was reached; `trace_send_ejected_full`, which means that the trace cache was full; and `trace_send_ejected_memsize`, which means that refinery was out of memory.
+These names are also the names of metrics that refinery tracks.
 We recommend enabling this setting whenever a rules-based sampler is in use, as it is useful for debugging and understanding the behavior of your Refinery installation.
 
 - Eligible for live reload.
@@ -522,7 +524,7 @@ If this is blank, then Refinery will not set the Honeycomb-specific headers for 
 - Not eligible for live reload.
 - Type: `string`
 - Example: `SetThisToAHoneycombKey`
-- Environment variable: `REFINERY_METRICS_OTEL_API_KEY, HONEYCOMB_API_KEY`
+- Environment variable: `REFINERY_OTEL_METRICS_API_KEY, HONEYCOMB_API_KEY`
 
 ### `Dataset`
 
@@ -730,7 +732,8 @@ This value will typically be set through an environment variable controlled by t
 If this value is zero or not set, then `MaxMemory` cannot be used to calculate the maximum allocation and `MaxAlloc` will be used instead.
 If set, then this must be a memory size.
 64-bit values are supported.
-Sizes with standard unit suffixes (`MB`, `GiB`, etc.) and Kubernetes units (`M`, `Gi`,  etc.) are also supported.
+Sizes with standard unit suffixes (`MB`, `GiB`, etc.) and Kubernetes units (`M`, `Gi`, etc.) are also supported.
+If set, `Collections.MaxAlloc` must not be defined.
 
 - Eligible for live reload.
 - Type: `memorysize`
@@ -746,7 +749,6 @@ If nonzero, then it must be an integer value between 1 and 100, representing the
 If set to a non-zero value, then once per tick (see `SendTicker`) the collector will compare total allocated bytes to this calculated value.
 If allocation is too high, then traces will be ejected from the cache early to reduce memory.
 Useful values for this setting are generally in the range of 70-90.
-If this value is `0`, then `MaxAlloc` will be used.
 
 - Eligible for live reload.
 - Type: `percentage`
@@ -761,6 +763,7 @@ If set, then this must be a memory size.
 64-bit values are supported.
 Sizes with standard unit suffixes (`MB`, `GiB`, etc) and Kubernetes units (`M`, `Gi`, etc) are also supported.
 See `MaxMemory` for more details.
+If set, `Collections.AvailableMemory` must not be defined.
 
 - Eligible for live reload.
 - Type: `memorysize`

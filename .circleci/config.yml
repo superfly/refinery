@@ -63,15 +63,14 @@ commands:
 jobs:
   test:
     docker:
-      - image: cimg/go:1.19
-      - image: redis:6
+      - image: cimg/go:1.20
+      - image: redis:6.2
     steps:
       - checkout
       - restore_cache:
           keys:
             - v1-dockerize-{{ checksum "Makefile" }}
             - v1-dockerize-
-      - run: make verify-licenses
       - run: make dockerize
       - save_cache:
           key: v1-dockerize-{{ checksum "Makefile" }}
@@ -80,6 +79,7 @@ jobs:
       - restore_cache:
           keys:
             - v3-go-mod-{{ checksum "go.sum" }}
+      - run: make verify-licenses
       - run: make test
       - save_cache:
           key: v3-go-mod-{{ checksum "go.sum" }}
@@ -88,7 +88,7 @@ jobs:
 
   build_binaries:
     docker:
-      - image: cimg/go:1.19
+      - image: cimg/go:1.20
     steps:
       - checkout
       - go-build:
@@ -100,6 +100,9 @@ jobs:
       - go-build:
           os: darwin
           arch: amd64
+      - go-build:
+          os: darwin
+          arch: arm64
       - go-build-convert:
           os: linux
           arch: amd64
@@ -109,6 +112,9 @@ jobs:
       - go-build-convert:
           os: darwin
           arch: amd64
+      - go-build-convert:
+          os: darwin
+          arch: arm64
       - run:
           name: apt_get_update
           command: sudo apt-get -qq update
@@ -184,7 +190,7 @@ jobs:
 
   publish_docker_to_ecr:
     docker:
-      - image: cimg/go:1.19
+      - image: cimg/go:1.20
     steps:
       - setup_googleko
       - checkout

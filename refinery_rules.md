@@ -4,7 +4,8 @@ The Refinery `rules` file is a YAML file.
 
 ## Example
 
-Here is a simple example of a `rules` file:
+Below is a simple example of a `rules` file.
+For a complete example, [visit the Refinery GitHub repository](https://github.com/honeycombio/refinery/blob/main/rules_complete.yaml).
 
 ```yaml
 RulesVersion: 2
@@ -48,7 +49,7 @@ It is not influenced by the contents of the trace other than the trace ID.
 
 The sample rate to use.
 It indicates a ratio, where one sample trace is kept for every N traces seen.
-For example, a `SampleRate` of `30`  will keep 1 out of every 30 traces.
+For example, a `SampleRate` of `30` will keep 1 out of every 30 traces.
 The choice on whether to keep any specific trace is random, so the rate is approximate.
 The sample rate is calculated from the trace ID, so all spans with the same trace ID will be sampled or not sampled together.
 
@@ -67,7 +68,7 @@ This sampler uses the `AvgSampleRate` algorithm from that package.
 
 The sample rate to use.
 It indicates a ratio, where one sample trace is kept for every N traces seen.
-For example, a `SampleRate` of `30`  will keep 1 out of every 30 traces.
+For example, a `SampleRate` of `30` will keep 1 out of every 30 traces.
 The choice on whether to keep any specific trace is random, so the rate is approximate.
 The sample rate is calculated from the trace ID, so all spans with the same trace ID will be sampled or not sampled together.
 
@@ -130,7 +131,7 @@ Every key will be represented at least once in any given window and more frequen
 
 The sample rate to use.
 It indicates a ratio, where one sample trace is kept for every N traces seen.
-For example, a `SampleRate` of `30`  will keep 1 out of every 30 traces.
+For example, a `SampleRate` of `30` will keep 1 out of every 30 traces.
 The choice on whether to keep any specific trace is random, so the rate is approximate.
 The sample rate is calculated from the trace ID, so all spans with the same trace ID will be sampled or not sampled together.
 
@@ -231,6 +232,14 @@ The sampler will adjust sample rates to try to achieve this desired throughput.
 This value is calculated for the individual instance, not for the cluster; if your cluster has multiple instances, then you will need to divide your total desired sample rate by the number of instances to get this value.
 
 - Type: `int`
+
+### `UseClusterSize`
+
+Indicates whether to use the cluster size to calculate the goal throughput.
+If `true`, then the goal throughput will be divided by the number of instances in the cluster.
+If `false`, then the goal throughput will be the value specified in `GoalThroughputPerSec`.
+
+- Type: `bool`
 
 ### `InitialSampleRate`
 
@@ -341,6 +350,14 @@ The sampler will adjust sample rates to try to achieve this desired throughput.
 This value is calculated for the individual instance, not for the cluster; if your cluster has multiple instances, then you will need to divide your total desired sample rate by the number of instances to get this value.
 
 - Type: `int`
+
+### `UseClusterSize`
+
+Indicates whether to use the cluster size to calculate the goal throughput.
+If `true`, then the goal throughput will be divided by the number of instances in the cluster.
+If `false`, then the goal throughput will be the value specified in `GoalThroughputPerSec`.
+
+- Type: `bool`
 
 ### `UpdateFrequency`
 
@@ -487,6 +504,7 @@ The comparison operator to use.
 String comparisons are case-sensitive.
 
 - Type: `string`
+- Options: `=`, `!=`, `>`, `<`, `>=`, `<=`, `starts-with`, `contains`, `does-not-contain`, `exists`, `not-exists`, `has-root-span`
 
 ### `Value`
 
@@ -522,6 +540,14 @@ This is the number of events per second you want to send.
 This is not the same as the Sample Rate.
 
 - Type: `int`
+
+### `UseClusterSize`
+
+Indicates whether to use the cluster size to calculate the goal throughput.
+If `true`, then the goal throughput will be divided by the number of instances in the cluster.
+If `false`, then the goal throughput will be the value specified in `GoalThroughputPerSec`.
+
+- Type: `bool`
 
 ### `ClearFrequency`
 

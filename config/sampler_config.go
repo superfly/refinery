@@ -6,6 +6,26 @@ import (
 	"strings"
 )
 
+// Define some constants for rule comparison operators
+const (
+	NEQ = "!="
+	EQ  = "="
+	GT  = ">"
+	LT  = "<"
+	GTE = ">="
+	LTE = "<="
+)
+
+// and also the rule keyword operators
+const (
+	Contains       = "contains"
+	DoesNotContain = "does-not-contain"
+	StartsWith     = "starts-with"
+	Exists         = "exists"
+	NotExists      = "not-exists"
+	HasRootSpan    = "has-root-span"
+)
+
 // The json tags in this file are used for conversion from the old format (see tools/convert for details).
 // They are deliberately all lowercase.
 // The yaml tags are used for the new format and are PascalCase.
@@ -139,6 +159,7 @@ type EMADynamicSamplerConfig struct {
 
 type EMAThroughputSamplerConfig struct {
 	GoalThroughputPerSec int      `json:"goalthroughputpersec" yaml:"GoalThroughputPerSec,omitempty"`
+	UseClusterSize       bool     `json:"useclustersize" yaml:"UseClusterSize,omitempty"`
 	InitialSampleRate    int      `json:"initialsamplerate" yaml:"InitialSampleRate,omitempty"`
 	AdjustmentInterval   Duration `json:"adjustmentinterval" yaml:"AdjustmentInterval,omitempty"`
 	Weight               float64  `json:"weight" yaml:"Weight,omitempty"`
@@ -154,13 +175,15 @@ type WindowedThroughputSamplerConfig struct {
 	UpdateFrequency      Duration `json:"updatefrequency" yaml:"UpdateFrequency,omitempty"`
 	LookbackFrequency    Duration `json:"lookbackfrequency" yaml:"LookbackFrequency,omitempty"`
 	GoalThroughputPerSec int      `json:"goalthroughputpersec" yaml:"GoalThroughputPerSec,omitempty"`
+	UseClusterSize       bool     `json:"useclustersize" yaml:"UseClusterSize,omitempty"`
 	FieldList            []string `json:"fieldlist" yaml:"FieldList,omitempty"`
 	MaxKeys              int      `json:"maxkeys" yaml:"MaxKeys,omitempty"`
 	UseTraceLength       bool     `json:"usetracelength" yaml:"UseTraceLength,omitempty"`
 }
 
 type TotalThroughputSamplerConfig struct {
-	GoalThroughputPerSec int64    `json:"goalthroughputpersec" yaml:"GoalThroughputPerSec,omitempty" validate:"gte=1"`
+	GoalThroughputPerSec int      `json:"goalthroughputpersec" yaml:"GoalThroughputPerSec,omitempty" validate:"gte=1"`
+	UseClusterSize       bool     `json:"useclustersize" yaml:"UseClusterSize,omitempty"`
 	ClearFrequency       Duration `json:"clearfrequency" yaml:"ClearFrequency,omitempty"`
 	FieldList            []string `json:"fieldlist" yaml:"FieldList,omitempty" validate:"required"`
 	MaxKeys              int      `json:"maxkeys" yaml:"MaxKeys,omitempty"`
@@ -213,23 +236,26 @@ func (r *RulesBasedSamplerCondition) String() string {
 
 func (r *RulesBasedSamplerCondition) setMatchesFunction() error {
 	switch r.Operator {
-	case "exists":
+	case Exists:
 		r.Matches = func(value any, exists bool) bool {
 			return exists
 		}
 		return nil
-	case "not-exists":
+	case NotExists:
 		r.Matches = func(value any, exists bool) bool {
 			return !exists
 		}
 		return nil
-	case "!=", "=", ">", "<", "<=", ">=":
+	case NEQ, EQ, GT, LT, LTE, GTE:
 		return setCompareOperators(r, r.Operator)
-	case "starts-with", "contains", "does-not-contain":
+	case StartsWith, Contains, DoesNotContain:
 		err := setMatchStringBasedOperators(r, r.Operator)
 		if err != nil {
 			return err
 		}
+	case HasRootSpan:
+		// this is evaluated at the trace level, so we don't need to do anything here
+		return nil
 	default:
 		return fmt.Errorf("unknown operator '%s'", r.Operator)
 	}
@@ -283,7 +309,7 @@ func tryConvertToString(v any) (string, bool) {
 	return fmt.Sprintf("%v", v), true
 }
 
-func tryConvertToBool(v any) bool {
+func TryConvertToBool(v any) bool {
 	value, ok := tryConvertToString(v)
 	if !ok {
 		return false
@@ -309,7 +335,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 
 		// check if conditionValue and spanValue are not equal
 		switch condition {
-		case "!=":
+		case NEQ:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToString(spanValue); exists && ok {
 					return n != conditionValue
@@ -317,7 +343,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "=":
+		case EQ:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToString(spanValue); exists && ok {
 					return n == conditionValue
@@ -325,7 +351,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case ">":
+		case GT:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToString(spanValue); exists && ok {
 					return n > conditionValue
@@ -333,7 +359,15 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "<":
+		case GTE:
+			r.Matches = func(spanValue any, exists bool) bool {
+				if n, ok := tryConvertToString(spanValue); exists && ok {
+					return n >= conditionValue
+				}
+				return false
+			}
+			return nil
+		case LT:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToString(spanValue); exists && ok {
 					return n < conditionValue
@@ -341,7 +375,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "<=":
+		case LTE:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToString(spanValue); exists && ok {
 					return n <= conditionValue
@@ -357,7 +391,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 			return fmt.Errorf("could not convert %v to string", r.Value)
 		}
 		switch condition {
-		case "!=":
+		case NEQ:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToInt(spanValue); exists && ok {
 					return n != conditionValue
@@ -365,7 +399,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "=":
+		case EQ:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToInt(spanValue); exists && ok {
 					return n == conditionValue
@@ -373,7 +407,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case ">":
+		case GT:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToInt(spanValue); exists && ok {
 					return n > conditionValue
@@ -381,7 +415,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case ">=":
+		case GTE:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToInt(spanValue); exists && ok {
 					return n >= conditionValue
@@ -389,7 +423,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "<":
+		case LT:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToInt(spanValue); exists && ok {
 					return n < conditionValue
@@ -397,7 +431,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "<=":
+		case LTE:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToInt(spanValue); exists && ok {
 					return n <= conditionValue
@@ -413,7 +447,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 		}
 		// check if conditionValue and spanValue are not equal
 		switch condition {
-		case "!=":
+		case NEQ:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToFloat(spanValue); exists && ok {
 					return n != conditionValue
@@ -421,7 +455,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "=":
+		case EQ:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToFloat(spanValue); exists && ok {
 					return n == conditionValue
@@ -429,7 +463,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case ">":
+		case GT:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToFloat(spanValue); exists && ok {
 					return n > conditionValue
@@ -437,7 +471,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case ">=":
+		case GTE:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToFloat(spanValue); exists && ok {
 					return n >= conditionValue
@@ -445,7 +479,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "<":
+		case LT:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToFloat(spanValue); exists && ok {
 					return n < conditionValue
@@ -453,7 +487,7 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 				return false
 			}
 			return nil
-		case "<=":
+		case LTE:
 			r.Matches = func(spanValue any, exists bool) bool {
 				if n, ok := tryConvertToFloat(spanValue); exists && ok {
 					return n <= conditionValue
@@ -463,20 +497,20 @@ func setCompareOperators(r *RulesBasedSamplerCondition, condition string) error 
 			return nil
 		}
 	case "bool":
-		conditionValue := tryConvertToBool(r.Value)
+		conditionValue := TryConvertToBool(r.Value)
 
 		switch condition {
-		case "!=":
+		case NEQ:
 			r.Matches = func(spanValue any, exists bool) bool {
-				if n := tryConvertToBool(spanValue); exists && n {
+				if n := TryConvertToBool(spanValue); exists {
 					return n != conditionValue
 				}
 				return false
 			}
 			return nil
-		case "=":
+		case EQ:
 			r.Matches = func(spanValue any, exists bool) bool {
-				if n := tryConvertToBool(spanValue); exists && n {
+				if n := TryConvertToBool(spanValue); exists {
 					return n == conditionValue
 				}
 				return false
@@ -498,7 +532,7 @@ func setMatchStringBasedOperators(r *RulesBasedSamplerCondition, condition strin
 	}
 
 	switch condition {
-	case "starts-with":
+	case StartsWith:
 		r.Matches = func(spanValue any, exists bool) bool {
 			s, ok := tryConvertToString(spanValue)
 			if ok {
@@ -506,7 +540,7 @@ func setMatchStringBasedOperators(r *RulesBasedSamplerCondition, condition strin
 			}
 			return false
 		}
-	case "contains":
+	case Contains:
 		r.Matches = func(spanValue any, exists bool) bool {
 			s, ok := tryConvertToString(spanValue)
 			if ok {
@@ -514,7 +548,7 @@ func setMatchStringBasedOperators(r *RulesBasedSamplerCondition, condition strin
 			}
 			return false
 		}
-	case "does-not-contain":
+	case DoesNotContain:
 		r.Matches = func(spanValue any, exists bool) bool {
 			s, ok := tryConvertToString(spanValue)
 			if ok {

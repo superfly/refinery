@@ -552,7 +552,7 @@ func (i *InMemCollector) isRootSpan(sp *types.Span) bool {
 	return true
 }
 
-func (i *InMemCollector) send(trace *types.Trace, reason string) {
+func (i *InMemCollector) send(trace *types.Trace, sendReason string) {
 	if trace.Sent {
 		// someone else already sent this so we shouldn't also send it.
 		i.Logger.Debug().
@@ -572,7 +572,7 @@ func (i *InMemCollector) send(trace *types.Trace, reason string) {
 		i.Metrics.Increment("trace_send_no_root")
 	}
 
-	i.Metrics.Increment(reason)
+	i.Metrics.Increment(sendReason)
 
 	var sampler sample.Sampler
 	var found bool
@@ -607,6 +607,8 @@ func (i *InMemCollector) send(trace *types.Trace, reason string) {
 	if key != "" {
 		logFields["sample_key"] = key
 	}
+	// This will observe sample rate attempts even if the trace is dropped
+	i.Metrics.Histogram("trace_aggregate_sample_rate", float64(rate))
 
 	i.sampleTraceCache.Record(trace, shouldSend)
 
@@ -617,6 +619,8 @@ func (i *InMemCollector) send(trace *types.Trace, reason string) {
 		return
 	}
 	i.Metrics.Increment("trace_send_kept")
+	// This will observe sample rate decisions only if the trace is kept
+	i.Metrics.Histogram("trace_kept_sample_rate", float64(rate))
 
 	// ok, we're not dropping this trace; send all the spans
 	if i.Config.GetIsDryRun() && !shouldSend {
@@ -626,6 +630,7 @@ func (i *InMemCollector) send(trace *types.Trace, reason string) {
 	for _, sp := range trace.GetSpans() {
 		if i.Config.GetAddRuleReasonToTrace() {
 			sp.Data["meta.refinery.reason"] = reason
+			sp.Data["meta.refinery.send_reason"] = sendReason
 			if key != "" {
 				sp.Data["meta.refinery.sample_key"] = key
 			}

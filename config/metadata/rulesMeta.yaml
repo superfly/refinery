@@ -7,7 +7,7 @@ groups:
       `Samplers` maps targets to sampler configurations. Each target is a
       Honeycomb environment (or a dataset for Honeycomb Classic keys).
       The value is the sampler to use for that target. A `__default__`
-      target is required. The target called `__default__` will be used 
+      target is required. The target called `__default__` will be used
       for any target that is not explicitly listed.
 
       The targets are determined by examining the API key used to send the
@@ -33,7 +33,7 @@ groups:
         summary: is the sample rate to use.
         description: >
           The sample rate to use. It indicates a ratio, where one sample trace
-          is kept for every N traces seen. For example, a `SampleRate` of `30` 
+          is kept for every N traces seen. For example, a `SampleRate` of `30`
           will keep 1 out of every 30 traces. The choice on whether to keep any
           specific trace is random, so the rate is approximate.
 
@@ -78,19 +78,19 @@ groups:
           will be handed to the Dynamic Sampler. The combination of values from
           all of these fields should reflect how interesting the trace is
           compared to another.
-          
+
           When choosing field names for `FieldList`, a good field selection
           has consistent values for high-frequency, boring traffic, and
           unique values for outliers and interesting traffic. Including
           an error field, or something like `HTTP status code`, is an
           excellent choice. Using fields with very high cardinality,
           like `k8s.pod.id`, is a bad choice.
-          
+
           If the combination of fields essentially makes each trace unique,
           then the Dynamic Sampler will sample everything. If the combination
           of fields is not unique enough, then you will not be guaranteed
           samples of the most interesting traces.
-          
+
           As an example, consider as a good set of fields: the combination of
           `HTTP endpoint` (high-frequency and boring), `HTTP method`, and
           `status code` (normally boring but can become interesting when
@@ -102,7 +102,7 @@ groups:
           combination of `HTTP endpoint`, `status code`, and `pod id`, since it
           would result in keys that are all unique, and therefore result in
           sampling 100% of traces.
-          
+
           For example, rather than a set of fields, using only the `HTTP
           endpoint` field is a **bad** choice, as it is not unique enough, and
           therefore interesting traces, like traces that experienced a `500`,
@@ -265,6 +265,8 @@ groups:
         type: int
         validations:
           - type: requiredInGroup
+          - type: minimum
+            arg: 1
         summary: is the desired throughput per second of events sent to Honeycomb.
         description: >
           The desired throughput **per second**. This is the number of events
@@ -274,6 +276,14 @@ groups:
           cluster has multiple instances, then you will need to divide your
           total desired sample rate by the number of instances to get this
           value.
+      - name: UseClusterSize
+        type: bool
+        summary: indicates whether to use the cluster size to calculate the goal throughput.
+        description: >
+          Indicates whether to use the cluster size to calculate the goal
+          throughput. If `true`, then the goal throughput will be divided by the
+          number of instances in the cluster. If `false`, then the goal
+          throughput will be the value specified in `GoalThroughputPerSec`.
       - name: InitialSampleRate
         type: int
         summary: is the sample rate to use.
@@ -363,6 +373,8 @@ groups:
         type: int
         validations:
           - type: requiredInGroup
+          - type: minimum
+            arg: 1
         summary: is the desired throughput per second of events sent to Honeycomb.
         description: >
           The desired throughput **per second**. This is the number of events
@@ -372,6 +384,14 @@ groups:
           cluster has multiple instances, then you will need to divide your
           total desired sample rate by the number of instances to get this
           value.
+      - name: UseClusterSize
+        type: bool
+        summary: indicates whether to use the cluster size to calculate the goal throughput.
+        description: >
+          Indicates whether to use the cluster size to calculate the goal
+          throughput. If `true`, then the goal throughput will be divided by the
+          number of instances in the cluster. If `false`, then the goal
+          throughput will be the value specified in `GoalThroughputPerSec`.
       - name: UpdateFrequency
         type: duration
         summary: is how often the sampling rate is recomputed.
@@ -429,11 +449,21 @@ groups:
         type: int
         validations:
           - type: requiredInGroup
+          - type: minimum
+            arg: 1
         summary: is the desired throughput per second of events sent to Honeycomb.
         description: >
           The desired throughput per second of events sent to Honeycomb. This is
           the number of events per second you want to send. This is not the same
           as the Sample Rate.
+      - name: UseClusterSize
+        type: bool
+        summary: indicates whether to use the cluster size to calculate the goal throughput.
+        description: >
+          Indicates whether to use the cluster size to calculate the goal
+          throughput. If `true`, then the goal throughput will be divided by the
+          number of instances in the cluster. If `false`, then the goal
+          throughput will be the value specified in `GoalThroughputPerSec`.
       - name: ClearFrequency
         type: duration
         summary: is the duration over which the sampler will calculate the throughput.
@@ -579,6 +609,7 @@ groups:
           case-sensitive.
       - name: Operator
         type: string
+        valuetype: choice
         validations:
           - type: choice
         choices:
@@ -593,6 +624,7 @@ groups:
               - does-not-contain
               - exists
               - not-exists
+              - has-root-span
         summary: is the comparison operator to use.
         description: >
           The comparison operator to use. String comparisons are case-sensitive.
