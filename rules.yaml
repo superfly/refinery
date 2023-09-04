@@ -37,4 +37,4 @@ Samplers:
                 - rpc.service
                 - rpc.method
         - Name: default
-          SampleRate: 0.7
+          SampleRate: 70
