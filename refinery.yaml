@@ -16,6 +16,9 @@ Debugging:
 Logger:
   Type: "stdout"
   Level: "warn"
+PrometheusMetrics:
+  Enabled: true
+  ListenAddr: "[::]:9091"
 GRPCServerParameters:
   Enabled: true
   ListenAddr: "[::]:8192"
