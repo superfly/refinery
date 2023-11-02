@@ -19,6 +19,8 @@ Logger:
 PrometheusMetrics:
   Enabled: true
   ListenAddr: "[::]:9091"
+OTelMetrics:
+  Enabled: true
 GRPCServerParameters:
   Enabled: true
   ListenAddr: "[::]:8192"
