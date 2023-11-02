@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jessevdk/go-flags"
 	"gopkg.in/yaml.v3"
 )
 
@@ -175,6 +176,13 @@ func (m *MemorySize) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// Make sure we implement flags.Unmarshaler so that it works with cmdenv.
+var _ flags.Unmarshaler = (*MemorySize)(nil)
+
+func (m *MemorySize) UnmarshalFlag(value string) error {
+	return m.UnmarshalText([]byte(value))
+}
+
 type fileConfig struct {
 	mainConfig    *configContents
 	mainHash      string
@@ -267,7 +275,7 @@ type HoneycombLoggerConfig struct {
 }
 
 type StdoutLoggerConfig struct {
-	Structured bool `yaml:"Structured" default:"true"`
+	Structured bool `yaml:"Structured" default:"false"`
 }
 
 type PrometheusMetricsConfig struct {
@@ -304,6 +312,7 @@ type RedisPeerManagementConfig struct {
 	Host           string   `yaml:"Host" cmdenv:"RedisHost"`
 	Username       string   `yaml:"Username" cmdenv:"RedisUsername"`
 	Password       string   `yaml:"Password" cmdenv:"RedisPassword"`
+	AuthCode       string   `yaml:"AuthCode" cmdenv:"RedisAuthCode"`
 	Prefix         string   `yaml:"Prefix" default:"refinery"`
 	Database       int      `yaml:"Database"`
 	UseTLS         bool     `yaml:"UseTLS" `
@@ -669,6 +678,13 @@ func (f *fileConfig) GetRedisPassword() (string, error) {
 	return f.mainConfig.RedisPeerManagement.Password, nil
 }
 
+func (f *fileConfig) GetRedisAuthCode() (string, error) {
+	f.mux.RLock()
+	defer f.mux.RUnlock()
+
+	return f.mainConfig.RedisPeerManagement.AuthCode, nil
+}
+
 func (f *fileConfig) GetRedisDatabase() int {
 	f.mux.RLock()
 	defer f.mux.RUnlock()
@@ -737,6 +753,13 @@ func (f *fileConfig) GetHoneycombLoggerConfig() (HoneycombLoggerConfig, error) {
 	defer f.mux.RUnlock()
 
 	return f.mainConfig.HoneycombLogger, nil
+}
+
+func (f *fileConfig) GetStdoutLoggerConfig() (StdoutLoggerConfig, error) {
+	f.mux.RLock()
+	defer f.mux.RUnlock()
+
+	return f.mainConfig.StdoutLogger, nil
 }
 
 func (f *fileConfig) GetAllSamplerRules() (*V2SamplerConfig, error) {

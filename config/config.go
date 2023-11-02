@@ -62,6 +62,10 @@ type Config interface {
 	// management.
 	GetRedisPassword() (string, error)
 
+	// GetRedisAuthCode returns the AUTH string to use for connecting to a Redis
+	// instance to use for peer management
+	GetRedisAuthCode() (string, error)
+
 	// GetRedisPrefix returns the prefix string used in the keys for peer
 	// management.
 	GetRedisPrefix() string
@@ -104,6 +108,9 @@ type Config interface {
 
 	// GetHoneycombLoggerConfig returns the config specific to the HoneycombLogger
 	GetHoneycombLoggerConfig() (HoneycombLoggerConfig, error)
+
+	// GetStdoutLoggerConfig returns the config specific to the StdoutLogger
+	GetStdoutLoggerConfig() (StdoutLoggerConfig, error)
 
 	// GetCollectionConfig returns the config specific to the InMemCollector
 	GetCollectionConfig() (CollectionConfig, error)

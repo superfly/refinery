@@ -413,9 +413,9 @@ StdoutLogger:
     ## `true` generates structured logs (JSON). `false` generates plain text
     ## logs.
     ##
-    ## default: true
+    ## default: false
     ## Not eligible for live reload.
-    # Structured: true
+    # Structured: false
 
 ########################
 ## Prometheus Metrics ##
@@ -667,6 +667,14 @@ RedisPeerManagement:
 
     ## Password is the password used to connect to Redis for peer cluster
     ## membership management.
+    ##
+    ## Many Redis installations do not use this field.
+    ##
+    ## Not eligible for live reload.
+    # Password: ""
+
+    ## AuthCode is the string used to connect to Redis for peer cluster
+    ## membership management using an explicit AUTH command.
     ##
     ## Many Redis installations do not use this field.
     ##
