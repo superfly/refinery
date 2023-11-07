@@ -6,6 +6,39 @@ Samplers:
   prod:
     RulesBasedSampler:
       Rules:
+        - Name: Corrosion Slow Apply
+          Conditions:
+            - Field: fsm.type
+              Operator: =
+              Value: corrosion
+            - Field: fsm.action
+              Operator: =
+              Value: apply
+            - Field: service.name
+              Operator: =
+              Value: flyd
+            - Field: duration_ms
+              Operator: '>='
+              Value: 5000
+              Datatype: float
+          Drop: false
+          SampleRate: 1
+        - Name: Sample Corrosion Apply
+          Conditions:
+            - Field: fsm.type
+              Operator: =
+              Value: corrosion
+            - Field: fsm.action
+              Operator: =
+              Value: apply
+            - Field: status_code
+              Operator: =
+              Value: 0
+            - Field: service.name
+              Operator: =
+              Value: flyd
+          Drop: false
+          SampleRate: 100
         - Name: keep fsm actions
           Conditions:
             - Field: fsm.action
