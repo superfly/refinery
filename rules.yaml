@@ -12,6 +12,19 @@ Samplers:
               Operator: exists
           Drop: false
           SampleRate: 1
+        - Name: sample tkdb revocation heartbeats
+          Conditions:
+            - Field: name
+              Operator: =
+              Value: Revocation
+            - Field: library.name
+              Operator: =
+              Value: tkdb-client
+            - Field: service.name
+              Operator: =
+              Value: flaps
+          Drop: false
+          SampleRate: 0.01
         - Name: Corrosion Ops dynamic sampler
           Conditions:
             - Field: http.url
