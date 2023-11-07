@@ -6,20 +6,19 @@ Samplers:
   prod:
     RulesBasedSampler:
       Rules:
-        - Name: drop fsm actions
+        - Name: keep fsm actions
           Conditions:
             - Field: fsm.action
               Operator: exists
-          Drop: true
-        - Name: dynamic sampler
+          Drop: false
+          SampleRate: 1
+        - Name: Corrosion Ops dynamic sampler
           Conditions:
-            - Field: rpc.service
-              Operator: exists
-            - Field: rpc.method
-              Operator: exists
-            - Field: host.id
-              Operator: exists
-            - Field: cloud.region
+            - Field: http.url
+              Operator: =
+              Value: "http://[fc01::1]:7878/v1/ops"
+              Datatype: string
+            - Field: http.status_code
               Operator: exists
           Sampler:
             EMADynamicSampler:
@@ -32,9 +31,32 @@ Samplers:
               MaxKeys: 500
               UseTraceLength: false
               FieldList:
-                - host.id
+                - http.url
+                - http.status_code
+        - Name: RPC dynamic sampler
+          Conditions:
+            - Field: rpc.service
+              Operator: exists
+            - Field: rpc.method
+              Operator: exists
+            - Field: cloud.region
+              Operator: exists
+            - Field: status_code
+              Operator: exists
+          Sampler:
+            EMADynamicSampler:
+              GoalSampleRate: 25
+              AdjustmentInterval: "15s"
+              Weight: 0.5
+              AgeOutValue: 0.5
+              BurstMultiple: 2
+              BurstDetectionDelay: 1
+              MaxKeys: 500
+              UseTraceLength: false
+              FieldList:
                 - cloud.region
                 - rpc.service
                 - rpc.method
+                - status_code
         - Name: default
           SampleRate: 70

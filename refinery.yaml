@@ -12,7 +12,7 @@ RefineryTelemetry:
 PeerManagement:
   Type: fly-dns
 Debugging:
-  DryRun: true
+  DryRun: false
 Logger:
   Type: "stdout"
   Level: "warn"
