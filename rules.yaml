@@ -24,7 +24,7 @@ Samplers:
               Operator: =
               Value: flaps
           Drop: false
-          SampleRate: 0.01
+          SampleRate: 100
         - Name: Corrosion Ops dynamic sampler
           Conditions:
             - Field: http.url
