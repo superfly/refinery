@@ -39,6 +39,26 @@ Samplers:
               Value: flyd
           Drop: false
           SampleRate: 100
+
+        - Name: machine.preparing_image slow keep all
+          Conditions:
+            - Field: name
+              Operator: =
+              Value: machine.preparing_image
+            - Field: duration_ms
+              Operator: '>='
+              Value: 5_000
+              Datatype: float
+          Drop: false
+          SampleRate: 1
+
+        - Name: fsm.error exists keep all
+          Conditions:
+            - Field: fsm.error_kind
+              Operator: exists
+          Drop: false
+          SampleRate: 1
+
         - Name: keep fsm actions
           Conditions:
             - Field: fsm.action
@@ -104,25 +124,6 @@ Samplers:
                 - rpc.service
                 - rpc.method
                 - status_code
-
-        - Name: machine.preparing_image slow keep all
-          Conditions:
-            - Field: name
-              Operator: =
-              Value: machine.preparing_image
-            - Field: duration_ms
-              Operator: '>='
-              Value: 5_000
-              Datatype: float
-          Drop: false
-          SampleRate: 1
-
-        - Name: fsm.error exists keep all
-          Conditions:
-            - Field: fsm.error_kind
-              Operator: exists
-          Drop: false
-          SampleRate: 1
 
         - Name: default
           SampleRate: 70
