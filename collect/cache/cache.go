@@ -3,6 +3,7 @@ package cache
 import (
 	"time"
 
+	"github.com/honeycombio/refinery/generics"
 	"github.com/honeycombio/refinery/logger"
 	"github.com/honeycombio/refinery/metrics"
 	"github.com/honeycombio/refinery/types"
@@ -17,10 +18,18 @@ type Cache interface {
 	// GetAll is used during shutdown to get all in-flight traces to flush them
 	GetAll() []*types.Trace
 
+	// GetCacheCapacity returns the number of traces that can be stored in the cache
+	GetCacheCapacity() int
+
 	// Retrieve and remove all traces which are past their SendBy date.
 	// Does not check whether they've been sent.
 	TakeExpiredTraces(now time.Time) []*types.Trace
+
+	// RemoveTraces accepts a set of trace IDs and removes any matching ones from
+	RemoveTraces(toDelete generics.Set[string])
 }
+
+var _ Cache = (*DefaultInMemCache)(nil)
 
 // DefaultInMemCache keeps a bounded number of entries to avoid growing memory
 // forever. Traces are expunged from the cache in insertion order (not access
@@ -67,7 +76,7 @@ func NewInMemCache(
 
 }
 
-func (d *DefaultInMemCache) GetCacheSize() int {
+func (d *DefaultInMemCache) GetCacheCapacity() int {
 	return len(d.traceBuffer)
 }
 
@@ -165,13 +174,13 @@ func (d *DefaultInMemCache) TakeExpiredTraces(now time.Time) []*types.Trace {
 
 // RemoveTraces accepts a set of trace IDs and removes any matching ones from
 // the insertion list. This is used in the case of a cache overrun.
-func (d *DefaultInMemCache) RemoveTraces(toDelete map[string]struct{}) {
+func (d *DefaultInMemCache) RemoveTraces(toDelete generics.Set[string]) {
 	d.Metrics.Gauge("collect_cache_capacity", float64(len(d.traceBuffer)))
 	d.Metrics.Histogram("collect_cache_entries", float64(len(d.cache)))
 
 	for i, t := range d.traceBuffer {
 		if t != nil {
-			if _, ok := toDelete[t.TraceID]; ok {
+			if toDelete.Contains(t.TraceID) {
 				d.traceBuffer[i] = nil
 				delete(d.cache, t.TraceID)
 			}

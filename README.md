@@ -80,11 +80,16 @@ This communication can be managed in two ways: via an explicit list of peers in 
 
 ## Configuration
 
-Configuration is controlled by Refinery's two configuration files, which is generally referred to as `config.yaml` for general configuration and `rules.yaml` for sampling configuration.
+Configuration is controlled by Refinery's two configuration files, which is generally referred to as `config.yaml` for general configuration and `rules.yaml` for sampling configuration. These files can be loaded from an accessible filesystem, or loaded with an unauthenticated GET request from a URL.
 
 Learn more about `config.yaml` and all the parameters that control Refinery's operation in our [Refinery configuration documentation](https://docs.honeycomb.io/manage-data-volume/refinery/configuration/).
 
 Learn more about `rules.yaml` and sampler configuration in our [Refinery sampling methods documentation](https://docs.honeycomb.io/manage-data-volume/refinery/sampling-methods/).
+
+It is valid to specify more than one configuration source.
+For example, it would be possible to have a common configuration file, plus a separate file containing only keys.
+On the command line, specify multiple files by repeating the command line switch.
+In environment variables, separate multiple config locations with commas.
 
 ## Running Refinery
 
@@ -109,12 +114,54 @@ Refinery supports the following key environment variables; please see the comman
 
 Note: `REFINERY_HONEYCOMB_METRICS_API_KEY` takes precedence over `REFINERY_HONEYCOMB_API_KEY` for the `LegacyMetrics.APIKey` configuration.
 
+## Managing Keys
+
+Sending data to Honeycomb requires attaching an API key to telemetry. In order to make managing telemetry easier, Refinery support the `ReceiveKeys` and `SendKey` config options, along with `AcceptOnlyListedKeys` and `SendKeyMode`. In various combinations, they have a lot of expressive power. Please see the configuration documentation for details on how to set these parameters.
+
+A quick start for specific scenarios is below:
+
+### A small number of services
+* Set keys in your applications the way you normally would, and leave Refinery set to the defaults.
+
+### Large number of services, central key preferred
+* Do not set keys in your applications
+* Set `SendKey` to a valid Honeycomb Key
+* Set `SendKeyMode` to `all`
+
+### Applications must set a key, but control the actual key at Refinery
+* Set `SendKey` to a valid Honeycomb Key
+* Set `SendKeyMode` to `nonblank`
+
+### Replace most keys but permit exceptions
+* Set `ReceiveKeys` to the list of exceptions
+* Set `SendKey` to a valid Honeycomb Key
+* Set `SendKeyMode` to `unlisted`
+
+### Some applications have custom keys, but others should use central key
+* Set custom keys in your applications as needed, leave others blank
+* Set `SendKey` to a valid Honeycomb Key
+* Set `SendKeyMode` to `missingonly`
+
+### Only applications knowing a specific secret should be able to send telemetry, but a central key is preferred
+* Choose an internal secret key (any arbitrary string)
+* Add that secret to `ReceiveKeys`
+* Set `AcceptOnlyListedKeys` to `true`
+* Set `SendKey` to a valid Honeycomb Key
+* Set `SendKeyMode` to `listedonly`
+
+### Replace specific keys used by certain applications with the central key
+* Set `AcceptOnlyListedKeys` to `false`
+* Set `ReceiveKeys` to the keys that should be replaced
+* Set `SendKey` to a valid Honeycomb Key
+* Set `SendKeyMode` to `listedonly`
+
+
 ## Dry Run Mode
 
-When getting started with Refinery or when updating sampling rules, it may be helpful to verify that the rules are working as expected before you start dropping traffic. To do so, use Dry Run Mode in Refinery. 
+When getting started with Refinery or when updating sampling rules, it may be helpful to verify that the rules are working as expected before you start dropping traffic. To do so, use Dry Run Mode in Refinery.
 
 Enable [Dry Run Mode](https://docs.honeycomb.io/manage-data-volume/refinery/sampling-methods/#run-refinery-in-dry-run-mode) by adding `DryRun = true` in your configuration file (`config.yaml`).
-Then, use [Query Builder in the Honeycomb UI](https://docs.honeycomb.io/working-with-your-data/queries/) to run queries to check your results and verify that the rules are working as intended. 
+Then, use [Query Builder in the Honeycomb UI](https://docs.honeycomb.io/working-with-your-data/queries/) to run queries to check your results and verify that the rules are working as intended.
 
 When Dry Run Mode is enabled, the metric `trace_send_kept` will increment for each trace, and the metric for `trace_send_dropped` will remain `0`, reflecting that we are sending all traces to Honeycomb.
 
@@ -123,6 +170,23 @@ When Dry Run Mode is enabled, the metric `trace_send_kept` will increment for ea
 Refinery uses bounded queues and circular buffers to manage allocating traces, so even under high volume memory use shouldn't expand dramatically. However, given that traces are stored in a circular buffer, when the throughput of traces exceeds the size of the buffer, things will start to go wrong. If you have statistics configured, a counter named `collect_cache_buffer_overrun` will be incremented each time this happens. The symptoms of this will be that traces will stop getting accumulated together, and instead spans that should be part of the same trace will be treated as two separate traces. All traces will continue to be sent (and sampled), but some sampling decisions will be made on incomplete data. The size of the circular buffer is a configuration option named `CacheCapacity`. To choose a good value, you should consider the throughput of traces (for example, traces / second started) and multiply that by the maximum duration of a trace (such as 3 seconds), then multiply that by some large buffer (maybe 10x). This estimate will give a good headroom.
 
 Determining the number of machines necessary in the cluster is not an exact science, and is best influenced by watching for buffer overruns. But for a rough heuristic, count on a single machine using about 2GB of memory to handle 5,000 incoming events and tracking 500 sub-second traces per second (for each full trace lasting less than a second and an average size of 10 spans per trace).
+
+### Stress Relief
+
+Refinery offers a mechanism called `Stress Relief` that improves stability under heavy load.
+The `stress_level` metric is a synthetic metric on a scale from 0 to 100 that is constructed from several Refinery metrics relating to queue sizes and memory usage.
+Under normal operation, its value should usually be in the single digits. During bursts of high traffic, the stress levels might creep up and then drop again as the volume drops. As it approaches 100, it is more and more likely that Refinery will start to fail and possibly crash.
+
+`Stress Relief` is a system that can monitor the `stress_level` metric and shed load when stress becomes a danger to stability. Once the `ActivationLevel`is reached, `Stress Relief` mode will become active. In this state. Refinery will deterministically sample each span based on `TraceID` without having to store the rest of the trace or evaluate rule conditions. `Stress Relief` will remain active until stress falls below the `DeactivationLevel` specified in the config.
+
+The stress relief settings are:
+
+- `Mode` - Setting to indicate how `Stress Relief` is used. `never` indicates that `Stress Relief` will not activate. `monitor` means `Stress Relief` will activate when the `ActivationLevel` and deactivate when the is reached. `always` means that `Stress Relief` mode will continuously be engaged. The `always` mode is intended for use in emergency situations.
+- `ActivationLevel` - When the stress level rises above this threshold, Refinery will activate `Stress Relief`.
+- `DeactivationLevel` - When the stress level falls below this threshold, Refinery will deactivate `Stress Relief`.
+- `SamplingRate` - The rate at which Refinery samples while `Stress Relief` is active.
+
+The `stress_level` is currently the best proxy for the overall load on Refinery. Even if `Stress Relief` is not active, if `stress_level` is frequently above 50, it is a good indicator that Refinery needs more resources -- more CPUs, more memory, or more nodes. On the other hand, if `stress_level` never goes into double digits it is likely that Refinery is overprovisioned.
 
 ## Understanding Regular Operation
 
@@ -166,7 +230,7 @@ To retrieve the rule set that Refinery uses for the specified dataset, which wil
 
 ```curl
 curl --include --get $REFINERY_HOST/query/rules/$FORMAT/$DATASET --header "x-honeycomb-refinery-query: my-local-token"
-``` 
+```
 
 To retrieve information about the configurations currently in use, including the timestamp when the configuration was last loaded:
 

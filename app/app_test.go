@@ -18,14 +18,18 @@ import (
 
 	"github.com/facebookgo/inject"
 	"github.com/facebookgo/startstop"
+	"github.com/jonboulle/clockwork"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 	"gopkg.in/alexcesaro/statsd.v2"
 
 	"github.com/honeycombio/libhoney-go"
 	"github.com/honeycombio/libhoney-go/transmission"
 	"github.com/honeycombio/refinery/collect"
 	"github.com/honeycombio/refinery/config"
+	"github.com/honeycombio/refinery/internal/health"
 	"github.com/honeycombio/refinery/internal/peer"
 	"github.com/honeycombio/refinery/logger"
 	"github.com/honeycombio/refinery/metrics"
@@ -84,17 +88,6 @@ func (w *countingWriterSender) waitForCount(t testing.TB, target int) {
 	}
 }
 
-type testPeers struct {
-	peers []string
-}
-
-func (p *testPeers) GetPeers() ([]string, error) {
-	return p.peers, nil
-}
-
-func (p *testPeers) RegisterUpdatedPeersCallback(callback func()) {
-}
-
 func newStartedApp(
 	t testing.TB,
 	libhoneyT transmission.Sender,
@@ -103,29 +96,33 @@ func newStartedApp(
 	enableHostMetadata bool,
 ) (*App, inject.Graph) {
 	c := &config.MockConfig{
-		GetSendDelayVal:          0,
-		GetTraceTimeoutVal:       10 * time.Millisecond,
-		GetMaxBatchSizeVal:       500,
+		GetTracesConfigVal: config.TracesConfig{
+			SendTicker:   config.Duration(2 * time.Millisecond),
+			SendDelay:    config.Duration(1 * time.Millisecond),
+			TraceTimeout: config.Duration(10 * time.Millisecond),
+			MaxBatchSize: 500,
+		},
 		GetSamplerTypeVal:        &config.DeterministicSamplerConfig{SampleRate: 1},
-		SendTickerVal:            2 * time.Millisecond,
 		PeerManagementType:       "file",
 		GetUpstreamBufferSizeVal: 10000,
 		GetPeerBufferSizeVal:     10000,
 		GetListenAddrVal:         "127.0.0.1:" + strconv.Itoa(basePort),
 		GetPeerListenAddrVal:     "127.0.0.1:" + strconv.Itoa(basePort+1),
-		IsAPIKeyValidFunc:        func(k string) bool { return k == legacyAPIKey || k == nonLegacyAPIKey },
 		GetHoneycombAPIVal:       "http://api.honeycomb.io",
-		GetCollectionConfigVal:   config.CollectionConfig{CacheCapacity: 10000},
+		GetCollectionConfigVal:   config.CollectionConfig{CacheCapacity: 10000, ShutdownDelay: config.Duration(1 * time.Second)},
 		AddHostMetadataToTrace:   enableHostMetadata,
 		TraceIdFieldNames:        []string{"trace.trace_id"},
 		ParentIdFieldNames:       []string{"trace.parent_id"},
 		SampleCache:              config.SampleCacheConfig{KeptSize: 10000, DroppedSize: 100000, SizeCheckInterval: config.Duration(10 * time.Second)},
+		GetAccessKeyConfigVal: config.AccessKeyConfig{
+			ReceiveKeys:          []string{legacyAPIKey, nonLegacyAPIKey},
+			AcceptOnlyListedKeys: true,
+		},
 	}
 
 	var err error
 	if peers == nil {
-		peers, err = peer.NewPeers(context.Background(), c, make(chan struct{}))
-		assert.NoError(t, err)
+		peers = &peer.FilePeers{Cfg: c, Metrics: &metrics.NullMetrics{}}
 	}
 
 	a := App{}
@@ -164,7 +161,7 @@ func newStartedApp(
 	sdPeer, _ := statsd.New(statsd.Prefix("refinery.peer"))
 	peerClient, err := libhoney.NewClient(libhoney.ClientConfig{
 		Transmission: &transmission.Honeycomb{
-			MaxBatchSize:         c.GetMaxBatchSize(),
+			MaxBatchSize:         c.GetTracesConfigVal.MaxBatchSize,
 			BatchTimeout:         libhoney.DefaultBatchTimeout,
 			MaxConcurrentBatches: libhoney.DefaultMaxConcurrentBatches,
 			PendingWorkCapacity:  uint(c.GetPeerBufferSize()),
@@ -191,6 +188,7 @@ func newStartedApp(
 		&inject.Object{Value: transmit.NewDefaultTransmission(upstreamClient, metricsr, "upstream"), Name: "upstreamTransmission"},
 		&inject.Object{Value: transmit.NewDefaultTransmission(peerClient, metricsr, "peer"), Name: "peerTransmission"},
 		&inject.Object{Value: shrdr},
+		&inject.Object{Value: noop.NewTracerProvider().Tracer("test"), Name: "tracer"},
 		&inject.Object{Value: collector},
 		&inject.Object{Value: metricsr, Name: "metrics"},
 		&inject.Object{Value: metricsr, Name: "genericMetrics"},
@@ -198,6 +196,8 @@ func newStartedApp(
 		&inject.Object{Value: metricsr, Name: "peerMetrics"},
 		&inject.Object{Value: "test", Name: "version"},
 		&inject.Object{Value: samplerFactory},
+		&inject.Object{Value: &health.Health{}},
+		&inject.Object{Value: clockwork.NewRealClock()},
 		&inject.Object{Value: &collect.MockStressReliever{}, Name: "stressRelief"},
 		&inject.Object{Value: &a},
 	)
@@ -226,8 +226,8 @@ func TestAppIntegration(t *testing.T) {
 	t.Parallel()
 	port := 10500
 
-	var out bytes.Buffer
-	_, graph := newStartedApp(t, &transmission.WriterSender{W: &out}, port, nil, false)
+	sender := &transmission.MockSender{}
+	app, graph := newStartedApp(t, sender, port, nil, false)
 
 	// Send a root span, it should be sent in short order.
 	req := httptest.NewRequest(
@@ -243,13 +243,19 @@ func TestAppIntegration(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
+	time.Sleep(5 * app.Config.GetTracesConfig().GetSendTickerValue())
+
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		events := sender.Events()
+		require.Len(collect, events, 1)
+		assert.Equal(collect, "dataset", events[0].Dataset)
+		assert.Equal(collect, "bar", events[0].Data["foo"])
+		assert.Equal(collect, "1", events[0].Data["trace.trace_id"])
+		assert.Equal(collect, uint(1), events[0].Data["meta.refinery.original_sample_rate"])
+	}, 2*time.Second, 10*time.Millisecond)
+
 	err = startstop.Stop(graph.Objects(), nil)
 	assert.NoError(t, err)
-
-	assert.Eventually(t, func() bool {
-		return out.Len() > 62
-	}, 5*time.Second, 2*time.Millisecond)
-	assert.Equal(t, `{"data":{"foo":"bar","meta.refinery.original_sample_rate":1,"trace.trace_id":"1"},"dataset":"dataset"}`+"\n", out.String())
 }
 
 func TestAppIntegrationWithNonLegacyKey(t *testing.T) {
@@ -257,8 +263,8 @@ func TestAppIntegrationWithNonLegacyKey(t *testing.T) {
 	t.Parallel()
 	port := 10600
 
-	var out bytes.Buffer
-	a, graph := newStartedApp(t, &transmission.WriterSender{W: &out}, port, nil, false)
+	sender := &transmission.MockSender{}
+	a, graph := newStartedApp(t, sender, port, nil, false)
 	a.IncomingRouter.SetEnvironmentCache(time.Second, func(s string) (string, error) { return "test", nil })
 	a.PeerRouter.SetEnvironmentCache(time.Second, func(s string) (string, error) { return "test", nil })
 
@@ -276,14 +282,20 @@ func TestAppIntegrationWithNonLegacyKey(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
+	// Wait for span to be sent.
+	var events []*transmission.Event
+	require.Eventually(t, func() bool {
+		events = sender.Events()
+		return len(events) == 1
+	}, 2*time.Second, 2*time.Millisecond)
+
+	assert.Equal(t, "dataset", events[0].Dataset)
+	assert.Equal(t, "bar", events[0].Data["foo"])
+	assert.Equal(t, "1", events[0].Data["trace.trace_id"])
+	assert.Equal(t, uint(1), events[0].Data["meta.refinery.original_sample_rate"])
+
 	err = startstop.Stop(graph.Objects(), nil)
 	assert.NoError(t, err)
-
-	// Wait for span to be sent.
-	assert.Eventually(t, func() bool {
-		return out.Len() > 62
-	}, 5*time.Second, 2*time.Millisecond)
-	assert.Equal(t, `{"data":{"foo":"bar","meta.refinery.original_sample_rate":1,"trace.trace_id":"1"},"dataset":"dataset"}`+"\n", out.String())
 }
 
 func TestAppIntegrationWithUnauthorizedKey(t *testing.T) {
@@ -291,8 +303,8 @@ func TestAppIntegrationWithUnauthorizedKey(t *testing.T) {
 	t.Parallel()
 	port := 10700
 
-	var out bytes.Buffer
-	a, graph := newStartedApp(t, &transmission.WriterSender{W: &out}, port, nil, false)
+	sender := &transmission.MockSender{}
+	a, graph := newStartedApp(t, sender, port, nil, false)
 	a.IncomingRouter.SetEnvironmentCache(time.Second, func(s string) (string, error) { return "test", nil })
 	a.PeerRouter.SetEnvironmentCache(time.Second, func(s string) (string, error) { return "test", nil })
 
@@ -307,7 +319,7 @@ func TestAppIntegrationWithUnauthorizedKey(t *testing.T) {
 
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	assert.NoError(t, err)
-	assert.Equal(t, 400, resp.StatusCode)
+	assert.Equal(t, 401, resp.StatusCode)
 	data, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	assert.NoError(t, err)
@@ -321,24 +333,20 @@ func TestPeerRouting(t *testing.T) {
 	// Parallel integration tests need different ports!
 	t.Parallel()
 
-	peers := &testPeers{
-		peers: []string{
-			"http://localhost:11001",
-			"http://localhost:11003",
-		},
-	}
+	peerList := []string{"http://localhost:11001", "http://localhost:11003"}
 
 	var apps [2]*App
-	var addrs [2]string
 	var senders [2]*transmission.MockSender
 	for i := range apps {
 		var graph inject.Graph
 		basePort := 11000 + (i * 2)
 		senders[i] = &transmission.MockSender{}
+		peers := &peer.MockPeers{
+			Peers: peerList,
+			ID:    peerList[i],
+		}
 		apps[i], graph = newStartedApp(t, senders[i], basePort, peers, false)
 		defer startstop.Stop(graph.Objects(), nil)
-
-		addrs[i] = "localhost:" + strconv.Itoa(basePort)
 	}
 
 	// Deliver to host 1, it should be passed to host 0 and emitted there.
@@ -395,8 +403,8 @@ func TestPeerRouting(t *testing.T) {
 	}
 	assert.Equal(t, expectedEvent, senders[0].Events()[0])
 
-	// Repeat, but deliver to host 1 on the peer channel, it should not be
-	// passed to host 0.
+	// Repeat, but deliver to host 1 on the peer channel, it should be
+	// passed to host 0 since that's who the trace belongs to.
 	req, err = http.NewRequest(
 		"POST",
 		"http://localhost:11003/1/batch/dataset",
@@ -409,22 +417,22 @@ func TestPeerRouting(t *testing.T) {
 	req.Body = io.NopCloser(strings.NewReader(blob))
 	post(t, req)
 	assert.Eventually(t, func() bool {
-		return len(senders[1].Events()) == 1
+		return len(senders[0].Events()) == 1
 	}, 2*time.Second, 2*time.Millisecond)
 	assert.Equal(t, expectedEvent, senders[0].Events()[0])
 }
 
 func TestHostMetadataSpanAdditions(t *testing.T) {
 	t.Parallel()
+	port := 14000
 
-	var out bytes.Buffer
-	_, graph := newStartedApp(t, &transmission.WriterSender{W: &out}, 14000, nil, true)
-	hostname, _ := os.Hostname()
+	sender := &transmission.MockSender{}
+	app, graph := newStartedApp(t, sender, port, nil, true)
 
 	// Send a root span, it should be sent in short order.
 	req := httptest.NewRequest(
 		"POST",
-		"http://localhost:14000/1/batch/dataset",
+		fmt.Sprintf("http://localhost:%d/1/batch/dataset", port),
 		strings.NewReader(`[{"data":{"foo":"bar","trace.trace_id":"1"}}]`),
 	)
 	req.Header.Set("X-Honeycomb-Team", legacyAPIKey)
@@ -435,38 +443,46 @@ func TestHostMetadataSpanAdditions(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	resp.Body.Close()
 
+	time.Sleep(5 * app.Config.GetTracesConfig().GetSendTickerValue())
+
+	var events []*transmission.Event
+	require.Eventually(t, func() bool {
+		events = sender.Events()
+		return len(events) == 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	assert.Equal(t, "dataset", events[0].Dataset)
+	assert.Equal(t, "bar", events[0].Data["foo"])
+	assert.Equal(t, "1", events[0].Data["trace.trace_id"])
+	assert.Equal(t, uint(1), events[0].Data["meta.refinery.original_sample_rate"])
+	hostname, _ := os.Hostname()
+	assert.Equal(t, hostname, events[0].Data["meta.refinery.local_hostname"])
+
 	err = startstop.Stop(graph.Objects(), nil)
 	assert.NoError(t, err)
-
-	assert.Eventually(t, func() bool {
-		return out.Len() > 62
-	}, 5*time.Second, 2*time.Millisecond)
-
-	expectedSpan := `{"data":{"foo":"bar","meta.refinery.local_hostname":"%s","meta.refinery.original_sample_rate":1,"trace.trace_id":"1"},"dataset":"dataset"}` + "\n"
-	assert.Equal(t, fmt.Sprintf(expectedSpan, hostname), out.String())
 }
 
 func TestEventsEndpoint(t *testing.T) {
 	t.Parallel()
 
-	peers := &testPeers{
-		peers: []string{
-			"http://localhost:13001",
-			"http://localhost:13003",
-		},
+	peerList := []string{
+		"http://localhost:13001",
+		"http://localhost:13003",
 	}
 
 	var apps [2]*App
-	var addrs [2]string
 	var senders [2]*transmission.MockSender
 	for i := range apps {
 		var graph inject.Graph
 		basePort := 13000 + (i * 2)
 		senders[i] = &transmission.MockSender{}
+		peers := &peer.MockPeers{
+			Peers: peerList,
+			ID:    peerList[i],
+		}
+
 		apps[i], graph = newStartedApp(t, senders[i], basePort, peers, false)
 		defer startstop.Stop(graph.Objects(), nil)
-
-		addrs[i] = "localhost:" + strconv.Itoa(basePort)
 	}
 
 	// Deliver to host 1, it should be passed to host 0 and emitted there.
@@ -512,8 +528,8 @@ func TestEventsEndpoint(t *testing.T) {
 		senders[0].Events()[0],
 	)
 
-	// Repeat, but deliver to host 1 on the peer channel, it should not be
-	// passed to host 0.
+	// Repeat, but deliver to host 1 on the peer channel, it should be
+	// passed to host 0 since that's the host this trace belongs to.
 
 	blob = blob[:0]
 	buf := bytes.NewBuffer(blob)
@@ -535,7 +551,7 @@ func TestEventsEndpoint(t *testing.T) {
 
 	post(t, req)
 	assert.Eventually(t, func() bool {
-		return len(senders[1].Events()) == 1
+		return len(senders[0].Events()) == 1
 	}, 2*time.Second, 2*time.Millisecond)
 
 	assert.Equal(
@@ -555,36 +571,36 @@ func TestEventsEndpoint(t *testing.T) {
 				"api_host":    "http://api.honeycomb.io",
 				"dataset":     "dataset",
 				"environment": "",
-				"enqueued_at": senders[1].Events()[0].Metadata.(map[string]any)["enqueued_at"],
+				"enqueued_at": senders[0].Events()[0].Metadata.(map[string]any)["enqueued_at"],
 			},
 		},
-		senders[1].Events()[0],
+		senders[0].Events()[0],
 	)
 }
 
 func TestEventsEndpointWithNonLegacyKey(t *testing.T) {
 	t.Parallel()
 
-	peers := &testPeers{
-		peers: []string{
-			"http://localhost:15001",
-			"http://localhost:15003",
-		},
+	peerList := []string{
+		"http://localhost:15001",
+		"http://localhost:15003",
 	}
 
 	var apps [2]*App
-	var addrs [2]string
 	var senders [2]*transmission.MockSender
 	for i := range apps {
 		basePort := 15000 + (i * 2)
 		senders[i] = &transmission.MockSender{}
+		peers := &peer.MockPeers{
+			Peers: peerList,
+			ID:    peerList[i],
+		}
+
 		app, graph := newStartedApp(t, senders[i], basePort, peers, false)
 		app.IncomingRouter.SetEnvironmentCache(time.Second, func(s string) (string, error) { return "test", nil })
 		app.PeerRouter.SetEnvironmentCache(time.Second, func(s string) (string, error) { return "test", nil })
 		apps[i] = app
 		defer startstop.Stop(graph.Objects(), nil)
-
-		addrs[i] = "localhost:" + strconv.Itoa(basePort)
 	}
 
 	// this traceID was chosen because it hashes to the appropriate shard for this
@@ -634,7 +650,7 @@ func TestEventsEndpointWithNonLegacyKey(t *testing.T) {
 		senders[0].Events()[0],
 	)
 
-	// Repeat, but deliver to host 1 on the peer channel, it should not be
+	// Repeat, but deliver to host 1 on the peer channel, it should be
 	// passed to host 0.
 
 	blob = blob[:0]
@@ -657,7 +673,7 @@ func TestEventsEndpointWithNonLegacyKey(t *testing.T) {
 
 	post(t, req)
 	assert.Eventually(t, func() bool {
-		return len(senders[1].Events()) == 1
+		return len(senders[0].Events()) == 1
 	}, 2*time.Second, 2*time.Millisecond)
 
 	assert.Equal(
@@ -677,10 +693,10 @@ func TestEventsEndpointWithNonLegacyKey(t *testing.T) {
 				"api_host":    "http://api.honeycomb.io",
 				"dataset":     "dataset",
 				"environment": "test",
-				"enqueued_at": senders[1].Events()[0].Metadata.(map[string]any)["enqueued_at"],
+				"enqueued_at": senders[0].Events()[0].Metadata.(map[string]any)["enqueued_at"],
 			},
 		},
-		senders[1].Events()[0],
+		senders[0].Events()[0],
 	)
 }
 
@@ -828,14 +844,12 @@ func BenchmarkDistributedTraces(b *testing.B) {
 		},
 	}
 
-	peers := &testPeers{
-		peers: []string{
-			"http://localhost:12001",
-			"http://localhost:12003",
-			"http://localhost:12005",
-			"http://localhost:12007",
-			"http://localhost:12009",
-		},
+	peerList := []string{
+		"http://localhost:12001",
+		"http://localhost:12003",
+		"http://localhost:12005",
+		"http://localhost:12007",
+		"http://localhost:12009",
 	}
 
 	var apps [5]*App
@@ -843,6 +857,11 @@ func BenchmarkDistributedTraces(b *testing.B) {
 	for i := range apps {
 		var graph inject.Graph
 		basePort := 12000 + (i * 2)
+		peers := &peer.MockPeers{
+			Peers: peerList,
+			ID:    peerList[i],
+		}
+
 		apps[i], graph = newStartedApp(b, sender, basePort, peers, false)
 		defer startstop.Stop(graph.Objects(), nil)
 

@@ -1,5 +1,277 @@
 # Refinery Changelog
 
+## 2.8.1 2024-09-05
+
+This release includes a fix to a bug that prevented Refinery from starting up a new cluster from scratch.
+
+### Fixes
+- fix: load peer list in sharder once manually on startup (#1314) | [Yingrong Zhao](https://github.com/vinozzZ)
+
+
+## 2.8.0 2024-09-05
+
+This release has many features designed to help manage and operate Refinery at scale.
+It also includes some features to help in writing sampling rules (`in` and `not-in` operators, `root.`)
+See full details in [the Release Notes](./RELEASE_NOTES.md).
+
+### Features
+- feat: add IN operator (#1302) | [Kent Quirk](https://github.com/kentquirk)
+- feat: support layered (multiple) configuration files (#1301) | [Kent Quirk](https://github.com/kentquirk)
+- feat: Add a cache to the cache (#1296) | [Kent Quirk](https://github.com/kentquirk)
+- feat: support configure refinery to use redis in cluster mode (#1294) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: allow `root.` in field list for dynamic sampler (#1275) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: redistribute traces on peer membership changes (#1268) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: Add SpanLimit (includes some config changes) (#1266) | [Kent Quirk](https://github.com/kentquirk)
+- feat: redistribute remaining traces during shutdown (#1261) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: Allow more complex key behavior (#1263) | [Kent Quirk](https://github.com/kentquirk)
+- feat: unregister peer asap on shutdown (#1260) | [Yingrong Zhao](https://github.com/vinozzZ)
+
+### Fixes
+- fix: periodically clean up recent_dropped_traces cache (#1312) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: revert the revert -- that wasn't the problem (#1311) | [Kent Quirk](https://github.com/kentquirk)
+- fix: revert "Use HTTP/2 for all upstream and peer-to-peer connections… (#1310) | [Kent Quirk](https://github.com/kentquirk)
+- fix: join peer list only after refinery is ready to accept traffic (#1309) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: use float histogram for otel metrics (#1303) | [Kent Quirk](https://github.com/kentquirk)
+- fix: escape use input in debug route (#1299) | [Tyler Helmuth](https://github.com/TylerHelmuth)
+- fix: use trace.DescendantCount for span limit (#1297) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: support TLS connections to Redis (#1285) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: only set send reason to span limit if it's configured (#1290) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: record previous value of sampler counter metrics so they report correctly (#1281) | [Kent Quirk](https://github.com/kentquirk)
+- fix: set up tls for redis when it's enabled | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: don't read more than max bytes from a request (#1282) | [Kent Quirk](https://github.com/kentquirk)
+- fix: allow draining traces even if only 1 peer left (#1278) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: record sample rate in decision cache during stress relief (#1273) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: SpanLimit shouldn't add SendDelay (#1272) | [Kent Quirk](https://github.com/kentquirk)
+- fix: Use HTTP/2 for all upstream and peer-to-peer connections (#1269) | [Irving Popovetsky](https://github.com/irvingpop)
+
+### Maintenance
+- maint: Add some extra logging to pubsub systems (#1308) | [Kent Quirk](https://github.com/kentquirk)
+- maint: Add warning about cli flags (#1293) | [Tyler Helmuth](https://github.com/TylerHelmuth)
+- maint: Delete unused Dockerfile (#1292) | [Tyler Helmuth](https://github.com/TylerHelmuth)
+- maint: add a docker'd Redis TLS local setup (#1291) | [Robb Kidd](https://github.com/robbkidd)
+- maint: change default for MaxSendMsgSize and MaxRcvMsgSize. (#1289) | [Kent Quirk](https://github.com/kentquirk)
+- maint: use non-forked cuckoofilter again (#1287) | [Kent Quirk](https://github.com/kentquirk)
+- maint(deps): bump the minor-patch group with 13 updates (#1304) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump the minor-patch group with 4 updates (#1262) | [dependabot[bot]](https://github.com/dependabot)
+- refactor: Remove error returns from config functions, fix tests. (#1259) | [Kent Quirk](https://github.com/kentquirk)
+- docs: fix CacheCapacity documentation (#1267) | [Kent Quirk](https://github.com/kentquirk)
+
+## 2.7.0 2024-07-29
+
+This release incorporates a new publish/subscribe (pubsub) system for faster and cleaner communication between Refinery nodes.
+In particular, the way Refinery uses Redis has changed.
+See full details in [the Release Notes](./RELEASE_NOTES.md).
+
+### Features
+
+- feat: Add metrics to pubsub and peers (#1226) | [Kent Quirk](https://github.com/kentquirk)
+- feat: add otel tracing support for Refinery internal operations (#1218) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: Add some useful generics (#1206) | [Kent Quirk](https://github.com/kentquirk)
+- feat: gossip config reload information (#1241) | [Kent Quirk](https://github.com/kentquirk)
+- feat: Health/Ready system imported from R3 (#1231) | [Kent Quirk](https://github.com/kentquirk)
+- feat: peer management on pubsub via callbacks (#1220) | [Kent Quirk](https://github.com/kentquirk)
+- feat: track config hash on config reload (#1212) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: use pub/sub for stress relief (#1221) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: Working, tested, but unused pubsub system (#1205) | [Kent Quirk](https://github.com/kentquirk)
+
+### Fixes
+
+- fix: add injection tags for configwatcher (#1246) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: add peer logging, add debug log of peers (#1239) | [Kent Quirk](https://github.com/kentquirk)
+- fix: allow a single node to activate stress relief mode during significant load increase (#1256) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: allow sending otel tracing to non honeycomb backend (#1219) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: Change pubsub interface to use callbacks. (#1217) | [Kent Quirk](https://github.com/kentquirk)
+- fix: clean up a print line (#1250) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: FilePeers implies no Redis (#1251) | [Kent Quirk](https://github.com/kentquirk)
+- fix: make sure stress relief pub/sub topic is consistent (#1245) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: make sure to inject Health object as a pointer (#1237) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: Record hashes at startup in metrics (#1252) | [Kent Quirk](https://github.com/kentquirk)
+- fix: reduce pub/sub messages from stress relief (#1248) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: remove otel-config-go as a dependency (#1240) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: remove personal api keys (#1253) | [Kent Quirk](https://github.com/kentquirk)
+- fix: Root spans must have a non-empty parent ID field (#1236) | [Mike Goldsmith](https://github.com/MikeGoldsmith)
+- fix: sharder should use peer identity from Peers package (#1249) | [Yingrong Zhao](https://github.com/vinozzZ)
+
+### Maintenance
+
+- docs: Tweak docs for reload (#1247) | [Kent Quirk](https://github.com/kentquirk)
+- docs: update vulnerability reporting process (#1224) | [Robb Kidd](https://github.com/robbkidd)
+- maint: add instrumentation for GoRedisPubSub (#1229) | [Yingrong Zhao](https://github.com/vinozzZ)
+- maint: Add jitter to peer traffic, fix startup (#1227) | [Kent Quirk](https://github.com/kentquirk)
+- maint: change targeted arch to arm for local development Dockerfile (#1228) | [Yingrong Zhao](https://github.com/vinozzZ)
+- maint: last changes before the final release prep (#1254) | [Kent Quirk](https://github.com/kentquirk)
+- maint: update doc based on config changes (#1243) | [Yingrong Zhao](https://github.com/vinozzZ)
+- maint: Update licenses (#1244) | [Tyler Helmuth](https://github.com/TylerHelmuth)
+- maint(deps): bump google.golang.org/grpc from 1.64.0 to 1.64.1 (#1223) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump the minor-patch group across 1 directory with 9 updates (#1232) | [dependabot[bot]](https://github.com/dependabot)
+
+
+## 2.6.1 2024-06-17
+
+### Fixes
+
+- fix: Don’t consider log events as root spans (#1208) | @MikeGoldsmith
+
+### Maintenance
+
+- maint(deps): bump the minor-patch group with 9 updates (#1198) | @dependabot
+
+## 2.6.0 2024-06-17
+
+### Features
+
+- feat: Allow URL encoded dataset in libhoney endpoint paths (#1199) | @MikeGoldsmith
+- feat: Add OTLP log endpoints (gRPC & HTTP) (#1187) | @MikeGoldsmith
+
+### Maintenance
+
+- maint: Bump libhoney-go to v1.23.1 (#1200) | @MikeGoldsmith
+- maint: bump libhoney-go to v1.23.0 (#1192) | @MikeGoldsmith
+- maint: bump Husky to v0.30.0 (#1190) | @TylerHelmuth
+
+## 2.5.2 2024-05-22
+
+This release fixes a race condition in OTel Metrics that caused Refinery to crash.
+This update is recommended for everyone who has OTelMetrics enabled.
+
+### Fixes
+
+- fix: correct race condition in OTel metrics (#1165) | [Kent Quirk](https://github.com/kentquirk)
+
+Thanks to [Joshua Jones](https://github.com/senojj) for the [bug report](https://github.com/honeycombio/refinery/issues/1156) and diagnosis.
+
+## 2.5.1 2024-05-15
+
+### Fixes
+
+- fix: Clarify what has-root-span does (#1114) | [Phillip Carter](https://github.com/cartermp)
+- fix: Add validation for ingest keys (#1066) | [Kent Quirk](https://github.com/kentquirk)
+- fix: Deal with locking issues at startup (#1060) | [Kent Quirk](https://github.com/kentquirk)
+- fix: Update cache lookup to use read lock (#1145) | [Joshua Jones](https://github.com/senojj)
+
+### Maintenance
+
+- maint: Bump protobuf (#1058) | [Kent Quirk](https://github.com/kentquirk)
+- maint(deps): bump the minor-patch group with 4 updates (#1073) | [dependabot[bot]](https://github.com/dependabot)
+
+## 2.5.0 2024-03-12
+
+The main feature is support of Honeycomb Classic ingest keys; there is also a performance improvement for the new
+`root.` rule feature, and a new metric to track traces dropped by rules.
+
+### Features
+
+- feat: new metric for drops caused by rules (#1047) | [Kent Quirk](https://github.com/kentquirk)
+- feat: Shortcut evaluation of rules containing 'root.' (#1018) | [Kent Quirk](https://github.com/kentquirk)
+- feat: support Classic Ingest Keys (#1043) | [Jason Harley](https://github.com/jharley)
+
+### Fixes
+
+- fix: change validation type for PeerManagement.Peers to be url (#1046) | [Yingrong Zhao](https://github.com/vinozzZ)
+- fix: `defaulttrue` now shows up in docs as `bool` (#1045) | [Kent Quirk](https://github.com/kentquirk)
+- fix: Support 'none' as a logger type (#1034) | [Kent Quirk](https://github.com/kentquirk)
+
+### Maintenance
+
+- maint: add labels to release.yml for auto-generated grouping (#1042) | [Jamie Danielson](https://github.com/JamieDanielson)
+- maint(deps): bump the minor-patch group with 12 updates (#1030) | [dependabot[bot]](https://github.com/dependabot)
+- maint: group minor/patch dep updates (#1028) | [Alex Boten](https://github.com/Alex Boten)
+
+
+## 2.4.3 2024-03-01
+
+A bug fix release for a regression introduced in the 2.4.2 bug fix release.
+It was possible to trigger 500 errors in Refinery's OTLP error responses when sending traces in an unsupported content-type.
+
+### Fixes
+
+- fix: upgrade husky to handle and add tests for invalid content type errors (#1019) | [Mike Goldsmith](https://github.com/MikeGoldsmith) & [Robb Kidd](https://github.com/robbkidd)
+
+## 2.4.2 2024-02-28
+
+This is a bug fix release for returning a improperly formatted OTLP error responses.
+OTLP clients receiving the improper response would show errors about parsing the response, masking the error message within the response which complicated solving data send issues.
+This release is a recommended upgrade for anyone sending OTLP data to Refinery.
+
+### Fixes
+
+- fix: Bring OTLP HTTP error responses in line with spec. (#1010) | [Tyler Helmuth](https://github.com/TylerHelmuth)
+
+## 2.4.1 2024-02-26
+
+This is a bug fix release for matching fields in the root span context.
+
+### Fixes
+
+The implementation in v2.4.0 can crash if the trace's root span is not present at the time a sampling decision is being made.
+Root spans are often not present when the root span is taking longer to complete than the time configured for Refinery to wait for a trace's spans to arrive (`TraceTimeout`).
+This release contains a fix for this crash and is a recommended upgrade for anyone using this new feature.
+
+- fix: handle root prefix when no root span on trace (#1006) | [fchikwekwe](https://github.com/fchikwekwe)
+
+### Maintenance
+
+- refactor: add default true type (#998) | [fchikwekwe](https://github.com/fchikwekwe)
+
+## 2.4.0 2024-2-20
+
+## Features
+
+- Update refinery_rules.md | [fchikwekwe](https://github.com/fchikwekwe)
+- feat: allow user to sample on root span context (#981) | [fchikwekwe](https://github.com/fchikwekwe)
+
+## Fixes
+
+- fix: flaky TestOriginalSampleRateIsNotedInMetaField (#991) | [Robb Kidd](https://github.com/robbkidd)
+- chore: consolidate routine dependency updates (#994) | [Robb Kidd](https://github.com/robbkidd)
+- chore: Revert "chore: fix license tracking (#989)" (#990) | [Robb Kidd](https://github.com/robbkidd)
+- chore: fix license tracking (#989) | [Robb Kidd](https://github.com/robbkidd)
+- fix: allow config bools to default to true (#969) | [Robb Kidd](https://github.com/robbkidd)
+
+## Maintenance
+
+- docs: update configMeta to remove spaces | [fchikwekwe](https://github.com/fchikwekwe)
+- docs: update refinery docs | [fchikwekwe](https://github.com/fchikwekwe)
+- docs: Add sampler default intervals to docs (#995) | [Mike Goldsmith](https://github.com/MikeGoldsmith)
+- docs: include a warning about surprising not-exists behavior (#979) | [Robb Kidd](https://github.com/robbkidd)
+- maint: Refactor cuckoo cache for reusability (#975) | [Yingrong Zhao](https://github.com/vinozzZ)
+- maint: create generic set and use it (#976) | [Kent Quirk](https://github.com/KentQuirk)
+- maint: bump deps for 2.4 (#968) | [fchikwekwe](https://github.com/fchikwekwe)
+- maint: bump Husky (#966) | [Kent Quirk](https://github.com/KentQuirk)
+
+
+## 2.3.0 2023-12-20
+
+## Features
+
+- feat: Add `matches` operator to rules (#939) | [Kent Quirk](https://github.com/kentquirk)
+- feat: Add Fields option for rules (#949) | [Kent Quirk](https://github.com/kentquirk)
+- feat: use a computed field for current descendant count in rules (#950) | [Yingrong Zhao](https://github.com/vinozzZ)
+- feat: add sent reason for late arriving spans (#936) | [Yingrong Zhao](https://github.com/vinozzZ)
+- docs: Add rule conditions documentation (#951) | [Kent Quirk](https://github.com/kentquirk)
+- docs: document stress relief in readme (#955) | [Faith Chikwekwe](https://github.com/fchikwekwe)
+
+## Fixes
+
+- fix: Fix memory size parsing (#944) | [tvdfly](https://github.com/tvdfly)
+- fix: handle otlp request with /v1/traces/ path (#933) | [Yingrong Zhao](https://github.com/vinozzZ)
+
+## Maintenance
+
+- maint: Update `firstversion` for 2.2  (#957) | [Kent Quirk](https://github.com/kentquirk)
+- maint: update codeowners to pipeline (#937) | [Jamie Danielson](https://github.com/JamieDanielson)
+- maint: update codeowners to pipeline-team (#942) | [Jamie Danielson](https://github.com/JamieDanielson)
+- maint: update project workflow for pipeline (#938) | [Jamie Danielson](https://github.com/JamieDanielson)
+- maint: upload test result to circle ci  (#940) | [Yingrong Zhao](https://github.com/vinozzZ)
+- maint: use command to check for other commands (#941) | [Robb Kidd](https://github.com/robbkidd)
+- docs: Add section on running tests to contributing guide (#953) | [Mike Goldsmith](https://github.com/MikeGoldsmith)
+- docs: update doc for release process and config/rules doc generation process (#932) | [Yingrong Zhao](https://github.com/vinozzZ)
+- test: Integration tests fail in parallel (#935) | [Kent Quirk](https://github.com/kentquirk)
+- test: try to deflake several flaky tests (#934) | [Kent Quirk](https://github.com/kentquirk)
+- test: attempt to fix flaky integration tests (#945) | [Yingrong Zhao](https://github.com/vinozzZ)
+- test: add deterministic fallback test (#948) | [Faith Chikwekwe](https://github.com/fchikwekwe)
+- test: use `t.Setenv` to set env vars in tests (#947) | [Eng Zer Jun](https://github.com/Juneezee)
+
 ## 2.2.0 2023-12-04
 
 This is a minor release with several new configuration options and bug fixes, and is recommended for all Refinery users. See [Release Notes](./RELEASE_NOTES.md) for a summary of changes.
@@ -177,8 +449,8 @@ For more information, see [the release notes](https://github.com/honeycombio/ref
 - docs: Fix up docs, especially envvar and cmdline (#737) | [Kent Quirk](https://github.com/kentquirk)
 - docs: Fix convert help and docs (#744) | [Kent Quirk](https://github.com/kentquirk)
 - maint: README updates -- round 1 (#742) | [Phillip Carter](https://github.com/cartermp)
-- maint(deps): Bump github.com/klauspost/compress from 1.16.4 to 1.16.5 (#675) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): Bump github.com/prometheus/client_golang from 1.14.0 to 1.15.1 (#676) | [dependabot[bot]](https://github.com/dependabot[bot])
+- maint(deps): Bump github.com/klauspost/compress from 1.16.4 to 1.16.5 (#675) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): Bump github.com/prometheus/client_golang from 1.14.0 to 1.15.1 (#676) | [dependabot[bot]](https://github.com/dependabot)
 - refactor: Rename fields for clarity in an E&S world (#680) | [Kent Quirk](https://github.com/kentquirk)
 - maint: Update dependencies (#699) | [Kent Quirk](https://github.com/kentquirk)
 - docs: Improve generated documentation (#711) | [Kent Quirk](https://github.com/kentquirk)
@@ -220,14 +492,14 @@ were already set upstream before refinery sampling for debugging purposes.
 ### Maintenance
 - chore: Update MetricsReportingInterval in config_complete.toml (#653) | [Davin](https://github.com/Davin)
 - maint: switch dependabot to collection (#660) | [Vera Reynolds](https://github.com/Vera Reynolds)
-- maint(deps): bump google.golang.org/protobuf from 1.28.1 to 1.30.0 (#663) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): bump github.com/honeycombio/husky from 0.21.0 to 0.22.2 (#662) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): bump github.com/klauspost/compress from 1.16.3 to 1.16.4 (#661) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): bump go.uber.org/automaxprocs from 1.5.1 to 1.5.2 (#650) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): bump github.com/honeycombio/dynsampler-go from 0.3.0 to 0.4.0 (#649) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): bump google.golang.org/grpc from 1.52.3 to 1.54.0 (#652) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): bump github.com/honeycombio/husky from 0.21.0 to 0.22.2 (#651) | [dependabot[bot]](https://github.com/dependabot[bot])
-- maint(deps): bump github.com/klauspost/compress from 1.16.0 to 1.16.3 (#648) | [dependabot[bot]](https://github.com/dependabot[bot])
+- maint(deps): bump google.golang.org/protobuf from 1.28.1 to 1.30.0 (#663) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump github.com/honeycombio/husky from 0.21.0 to 0.22.2 (#662) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump github.com/klauspost/compress from 1.16.3 to 1.16.4 (#661) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump go.uber.org/automaxprocs from 1.5.1 to 1.5.2 (#650) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump github.com/honeycombio/dynsampler-go from 0.3.0 to 0.4.0 (#649) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump google.golang.org/grpc from 1.52.3 to 1.54.0 (#652) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump github.com/honeycombio/husky from 0.21.0 to 0.22.2 (#651) | [dependabot[bot]](https://github.com/dependabot)
+- maint(deps): bump github.com/klauspost/compress from 1.16.0 to 1.16.3 (#648) | [dependabot[bot]](https://github.com/dependabot)
 - maint: Add labels to docker image (#640) | [Tyler Helmuth](https://github.com/TylerHelmuth)
 - maint: Add LICENSES dir (#638) | [Tyler Helmuth](https://github.com/TylerHelmuth)
 

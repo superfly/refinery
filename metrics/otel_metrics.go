@@ -34,7 +34,7 @@ type OTelMetrics struct {
 
 	counters   map[string]metric.Int64Counter
 	gauges     map[string]metric.Float64ObservableGauge
-	histograms map[string]metric.Int64Histogram
+	histograms map[string]metric.Float64Histogram
 	updowns    map[string]metric.Int64UpDownCounter
 
 	// values keeps a map of all the non-histogram metrics and their current value
@@ -47,9 +47,12 @@ type OTelMetrics struct {
 func (o *OTelMetrics) Start() error {
 	cfg := o.Config.GetOTelMetricsConfig()
 
+	o.lock.Lock()
+	defer o.lock.Unlock()
+
 	o.counters = make(map[string]metric.Int64Counter)
 	o.gauges = make(map[string]metric.Float64ObservableGauge)
-	o.histograms = make(map[string]metric.Int64Histogram)
+	o.histograms = make(map[string]metric.Float64Histogram)
 	o.updowns = make(map[string]metric.Int64UpDownCounter)
 
 	o.values = make(map[string]float64)
@@ -179,6 +182,9 @@ func (o *OTelMetrics) Start() error {
 }
 
 func (o *OTelMetrics) Register(name string, metricType string) {
+	o.lock.Lock()
+	defer o.lock.Unlock()
+
 	switch metricType {
 	case "counter":
 		ctr, err := o.meter.Int64Counter(name)
@@ -189,9 +195,15 @@ func (o *OTelMetrics) Register(name string, metricType string) {
 		o.counters[name] = ctr
 	case "gauge":
 		var f metric.Float64Callback = func(_ context.Context, result metric.Float64Observer) error {
+			// this callback is invoked from outside this function call, so we
+			// need to Rlock when we read the values map. We don't know how long
+			// Observe() takes, so we make a copy of the value and unlock before
+			// calling Observe.
 			o.lock.RLock()
-			defer o.lock.RUnlock()
-			result.Observe(o.values[name])
+			v := o.values[name]
+			o.lock.RUnlock()
+
+			result.Observe(v)
 			return nil
 		}
 		g, err := o.meter.Float64ObservableGauge(name,
@@ -203,7 +215,7 @@ func (o *OTelMetrics) Register(name string, metricType string) {
 		}
 		o.gauges[name] = g
 	case "histogram":
-		h, err := o.meter.Int64Histogram(name)
+		h, err := o.meter.Float64Histogram(name)
 		if err != nil {
 			o.Logger.Error().WithString("msg", "failed to create histogram").WithString("name", name)
 			return
@@ -256,7 +268,7 @@ func (o *OTelMetrics) Histogram(name string, val interface{}) {
 
 	if h, ok := o.histograms[name]; ok {
 		f := ConvertNumeric(val)
-		h.Record(context.Background(), int64(f))
+		h.Record(context.Background(), f)
 		o.values[name] += f
 	}
 }
