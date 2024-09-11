@@ -135,6 +135,13 @@ func main() {
 		// if we're using redis, we need to set it up for both peers and pubsub
 		peers = &peer.RedisPubsubPeers{Done: done}
 		pubsubber = &pubsub.GoRedisPubSub{}
+	case "fly-dns":
+		flydnsPeer, err := peer.NewDnsPeers(c, done)
+		if err != nil {
+			panic(fmt.Sprintf("error loading fly-dns: %s", err))
+		}
+		peers = flydnsPeer
+		pubsubber = &pubsub.LocalPubSub{}
 	default:
 		// this should have been caught by validation
 		panic("invalid config option 'PeerManagement.Type'")
