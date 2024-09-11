@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"math"
 	"net"
@@ -23,6 +24,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/grpc"
+	healthserver "google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
@@ -31,14 +33,18 @@ import (
 	// grpc/gzip compressor, auto registers on import
 	_ "google.golang.org/grpc/encoding/gzip"
 
+	huskyotlp "github.com/honeycombio/husky/otlp"
+
 	"github.com/honeycombio/refinery/collect"
 	"github.com/honeycombio/refinery/config"
+	"github.com/honeycombio/refinery/internal/health"
 	"github.com/honeycombio/refinery/logger"
 	"github.com/honeycombio/refinery/metrics"
 	"github.com/honeycombio/refinery/sharder"
 	"github.com/honeycombio/refinery/transmit"
 	"github.com/honeycombio/refinery/types"
 
+	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
@@ -49,13 +55,15 @@ const (
 	numZstdDecoders        = 4
 	traceIDShortLength     = 8
 	traceIDLongLength      = 16
-	GRPCMessageSizeMax int = 5000000 // 5MB
+	GRPCMessageSizeMax int = 5_000_000 // 5MB
+	HTTPMessageSizeMax     = 5_000_000 // 5MB
 	defaultSampleRate      = 1
 )
 
 type Router struct {
 	Config               config.Config         `inject:""`
 	Logger               logger.Logger         `inject:""`
+	Health               health.Reporter       `inject:""`
 	HTTPTransport        *http.Transport       `inject:"upstreamTransport"`
 	UpstreamTransmission transmit.Transmission `inject:"upstreamTransmission"`
 	PeerTransmission     transmit.Transmission `inject:"peerTransmission"`
@@ -81,8 +89,10 @@ type Router struct {
 	server     *http.Server
 	grpcServer *grpc.Server
 	doneWG     sync.WaitGroup
+	donech     chan struct{}
 
 	environmentCache *environmentCache
+	hsrv             *healthserver.Server
 }
 
 type BatchResponse struct {
@@ -149,8 +159,8 @@ func (r *Router) LnS(incomingOrPeer string) {
 	muxxer.Use(r.requestLogger)
 	muxxer.Use(r.panicCatcher)
 
-	// answer a basic health check locally
 	muxxer.HandleFunc("/alive", r.alive).Name("local health")
+	muxxer.HandleFunc("/ready", r.ready).Name("local readiness")
 	muxxer.HandleFunc("/panic", r.panic).Name("intentional panic")
 	muxxer.HandleFunc("/version", r.version).Name("report version info")
 
@@ -165,7 +175,8 @@ func (r *Router) LnS(incomingOrPeer string) {
 
 	// require an auth header for events and batches
 	authedMuxxer := muxxer.PathPrefix("/1/").Methods("POST").Subrouter()
-	authedMuxxer.Use(r.apiKeyChecker)
+	authedMuxxer.UseEncodedPath()
+	authedMuxxer.Use(r.apiKeyProcessor)
 
 	// handle events and batches
 	authedMuxxer.HandleFunc("/events/{datasetName}", r.event).Name("event")
@@ -179,23 +190,11 @@ func (r *Router) LnS(incomingOrPeer string) {
 
 	var listenAddr, grpcAddr string
 	if r.incomingOrPeer == "incoming" {
-		listenAddr, err = r.Config.GetListenAddr()
-		if err != nil {
-			r.iopLogger.Error().Logf("failed to get listen addr config: %s", err)
-			return
-		}
-		// GRPC listen addr is optional, err means addr was not empty and invalid
-		grpcAddr, err = r.Config.GetGRPCListenAddr()
-		if err != nil {
-			r.iopLogger.Error().Logf("failed to get grpc listen addr config: %s", err)
-			return
-		}
+		listenAddr = r.Config.GetListenAddr()
+		// GRPC listen addr is optional
+		grpcAddr = r.Config.GetGRPCListenAddr()
 	} else {
-		listenAddr, err = r.Config.GetPeerListenAddr()
-		if err != nil {
-			r.iopLogger.Error().Logf("failed to get peer listen addr config: %s", err)
-			return
-		}
+		listenAddr = r.Config.GetPeerListenAddr()
 	}
 
 	r.iopLogger.Info().Logf("Listening on %s", listenAddr)
@@ -205,6 +204,7 @@ func (r *Router) LnS(incomingOrPeer string) {
 		IdleTimeout: r.Config.GetHTTPIdleTimeout(),
 	}
 
+	r.donech = make(chan struct{})
 	if r.Config.GetGRPCEnabled() && len(grpcAddr) > 0 {
 		l, err := net.Listen("tcp", grpcAddr)
 		if err != nil {
@@ -224,10 +224,19 @@ func (r *Router) LnS(incomingOrPeer string) {
 				Timeout:               time.Duration(grpcConfig.KeepAliveTimeout),
 			}),
 		}
-		traceServer := NewTraceServer(r)
 		r.grpcServer = grpc.NewServer(serverOpts...)
+
+		traceServer := NewTraceServer(r)
 		collectortrace.RegisterTraceServiceServer(r.grpcServer, traceServer)
-		grpc_health_v1.RegisterHealthServer(r.grpcServer, r)
+
+		logsServer := NewLogsServer(r)
+		collectorlogs.RegisterLogsServiceServer(r.grpcServer, logsServer)
+
+		// health check -- manufactured by grpc health package
+		r.hsrv = healthserver.NewServer()
+		grpc_health_v1.RegisterHealthServer(r.grpcServer, r.hsrv)
+		r.startGRPCHealthMonitor()
+
 		go r.grpcServer.Serve(l)
 	}
 
@@ -253,13 +262,35 @@ func (r *Router) Stop() error {
 	if r.grpcServer != nil {
 		r.grpcServer.GracefulStop()
 	}
+	close(r.donech)
 	r.doneWG.Wait()
 	return nil
 }
 
 func (r *Router) alive(w http.ResponseWriter, req *http.Request) {
-	r.iopLogger.Debug().Logf("answered /x/alive check")
-	w.Write([]byte(`{"source":"refinery","alive":"yes"}`))
+	r.iopLogger.Debug().Logf("answered /alive check")
+
+	alive := r.Health.IsAlive()
+	r.Metrics.Gauge("is_alive", alive)
+	if !alive {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		r.marshalToFormat(w, map[string]interface{}{"source": "refinery", "alive": "no"}, "json")
+		return
+	}
+	r.marshalToFormat(w, map[string]interface{}{"source": "refinery", "alive": "yes"}, "json")
+}
+
+func (r *Router) ready(w http.ResponseWriter, req *http.Request) {
+	r.iopLogger.Debug().Logf("answered /ready check")
+
+	ready := r.Health.IsReady()
+	r.Metrics.Gauge("is_ready", ready)
+	if !ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		r.marshalToFormat(w, map[string]interface{}{"source": "refinery", "ready": "no"}, "json")
+		return
+	}
+	r.marshalToFormat(w, map[string]interface{}{"source": "refinery", "ready": "yes"}, "json")
 }
 
 func (r *Router) panic(w http.ResponseWriter, req *http.Request) {
@@ -273,29 +304,19 @@ func (r *Router) version(w http.ResponseWriter, req *http.Request) {
 func (r *Router) debugTrace(w http.ResponseWriter, req *http.Request) {
 	traceID := mux.Vars(req)["traceID"]
 	shard := r.Sharder.WhichShard(traceID)
-	w.Write([]byte(fmt.Sprintf(`{"traceID":"%s","node":"%s"}`, traceID, shard.GetAddress())))
+	w.Write([]byte(fmt.Sprintf(`{"traceID":"%s","node":"%s"}`, html.EscapeString(traceID), shard.GetAddress())))
 }
 
 func (r *Router) getSamplerRules(w http.ResponseWriter, req *http.Request) {
 	format := strings.ToLower(mux.Vars(req)["format"])
 	dataset := mux.Vars(req)["dataset"]
-	cfg, name, err := r.Config.GetSamplerConfigForDestName(dataset)
-	if err != nil {
-		w.Write([]byte(fmt.Sprintf("got error %v trying to fetch config for dataset %s\n", err, dataset)))
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	cfg, name := r.Config.GetSamplerConfigForDestName(dataset)
 	r.marshalToFormat(w, map[string]interface{}{name: cfg}, format)
 }
 
 func (r *Router) getAllSamplerRules(w http.ResponseWriter, req *http.Request) {
 	format := strings.ToLower(mux.Vars(req)["format"])
-	cfgs, err := r.Config.GetAllSamplerRules()
-	if err != nil {
-		w.Write([]byte(fmt.Sprintf("got error %v trying to fetch configs", err)))
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	cfgs := r.Config.GetAllSamplerRules()
 	r.marshalToFormat(w, cfgs, format)
 }
 
@@ -380,13 +401,12 @@ func (r *Router) requestToEvent(req *http.Request, reqBod []byte) (*types.Event,
 		sampleRate = 1
 	}
 	eventTime := getEventTime(req.Header.Get(types.TimestampHeader))
-	vars := mux.Vars(req)
-	dataset := vars["datasetName"]
-
-	apiHost, err := r.Config.GetHoneycombAPI()
+	dataset, err := getDatasetFromRequest(req)
 	if err != nil {
 		return nil, err
 	}
+
+	apiHost := r.Config.GetHoneycombAPI()
 
 	// get environment name - will be empty for legacy keys
 	environment, err := r.getEnvironmentName(apiKey)
@@ -439,6 +459,12 @@ func (r *Router) batch(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	dataset, err := getDatasetFromRequest(req)
+	if err != nil {
+		r.handlerReturnWithError(w, ErrReqToEvent, err)
+	}
+	apiHost := r.Config.GetHoneycombAPI()
+
 	apiKey := req.Header.Get(types.APIKeyHeader)
 	if apiKey == "" {
 		apiKey = req.Header.Get(types.APIKeyHeaderShort)
@@ -452,17 +478,15 @@ func (r *Router) batch(w http.ResponseWriter, req *http.Request) {
 
 	batchedResponses := make([]*BatchResponse, 0, len(batchedEvents))
 	for _, bev := range batchedEvents {
-		ev, err := r.batchedEventToEvent(req, bev, apiKey, environment)
-		if err != nil {
-			batchedResponses = append(
-				batchedResponses,
-				&BatchResponse{
-					Status: http.StatusBadRequest,
-					Error:  fmt.Sprintf("failed to convert to event: %s", err.Error()),
-				},
-			)
-			debugLog.WithField("error", err).Logf("event from batch failed to process event")
-			continue
+		ev := &types.Event{
+			Context:     req.Context(),
+			APIHost:     apiHost,
+			APIKey:      apiKey,
+			Dataset:     dataset,
+			Environment: environment,
+			SampleRate:  bev.getSampleRate(),
+			Timestamp:   bev.getEventTime(),
+			Data:        bev.Data,
 		}
 
 		err = r.processEvent(ev, reqID)
@@ -486,6 +510,41 @@ func (r *Router) batch(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.Write(response)
+}
+
+func (router *Router) processOTLPRequest(
+	ctx context.Context,
+	batches []huskyotlp.Batch,
+	apiKey string) error {
+
+	var requestID types.RequestIDContextKey
+	apiHost := router.Config.GetHoneycombAPI()
+
+	// get environment name - will be empty for legacy keys
+	environment, err := router.getEnvironmentName(apiKey)
+	if err != nil {
+		return nil
+	}
+
+	for _, batch := range batches {
+		for _, ev := range batch.Events {
+			event := &types.Event{
+				Context:     ctx,
+				APIHost:     apiHost,
+				APIKey:      apiKey,
+				Dataset:     batch.Dataset,
+				Environment: environment,
+				SampleRate:  uint(ev.SampleRate),
+				Timestamp:   ev.Timestamp,
+				Data:        ev.Attributes,
+			}
+			if err = router.processEvent(event, requestID); err != nil {
+				router.Logger.Error().Logf("Error processing event: " + err.Error())
+			}
+		}
+	}
+
+	return nil
 }
 
 func (r *Router) processEvent(ev *types.Event, reqID interface{}) error {
@@ -530,22 +589,24 @@ func (r *Router) processEvent(ev *types.Event, reqID interface{}) error {
 	// and either drop or send the trace without even trying to cache or forward it.
 	isProbe := false
 	if r.Collector.Stressed() {
-		rate, keep, reason := r.Collector.GetStressedSampleRate(traceID)
+		processed, kept := r.Collector.ProcessSpanImmediately(span)
 
-		r.Collector.ProcessSpanImmediately(span, keep, rate, reason)
+		if processed {
+			if !kept {
+				return nil
 
-		if !keep {
-			return nil
+			}
+
+			// If the span was kept, we want to generate a probe that we'll forward
+			// to a peer IF this span would have been forwarded.
+			ev.Data["meta.refinery.probe"] = true
+			isProbe = true
 		}
-		// If the span was kept, we want to generate a probe that we'll forward
-		// to a peer IF this span would have been forwarded.
-		ev.Data["meta.refinery.probe"] = true
-		isProbe = true
 	}
 
 	// Figure out if we should handle this span locally or pass on to a peer
 	targetShard := r.Sharder.WhichShard(traceID)
-	if r.incomingOrPeer == "incoming" && !targetShard.Equals(r.Sharder.MyShard()) {
+	if !targetShard.Equals(r.Sharder.MyShard()) {
 		r.Metrics.Increment(r.incomingOrPeer + "_router_peer")
 		debugLog.
 			WithString("peer", targetShard.GetAddress()).
@@ -596,7 +657,7 @@ func (r *Router) getMaybeCompressedBody(req *http.Request) (io.Reader, error) {
 		defer gzipReader.Close()
 
 		buf := &bytes.Buffer{}
-		if _, err := io.Copy(buf, gzipReader); err != nil {
+		if _, err := io.Copy(buf, io.LimitReader(gzipReader, HTTPMessageSizeMax)); err != nil {
 			return nil, err
 		}
 		reader = buf
@@ -612,7 +673,7 @@ func (r *Router) getMaybeCompressedBody(req *http.Request) (io.Reader, error) {
 			return nil, err
 		}
 		buf := &bytes.Buffer{}
-		if _, err := io.Copy(buf, zReader); err != nil {
+		if _, err := io.Copy(buf, io.LimitReader(zReader, HTTPMessageSizeMax)); err != nil {
 			return nil, err
 		}
 
@@ -621,32 +682,6 @@ func (r *Router) getMaybeCompressedBody(req *http.Request) (io.Reader, error) {
 		reader = req.Body
 	}
 	return reader, nil
-}
-
-func (r *Router) batchedEventToEvent(req *http.Request, bev batchedEvent, apiKey string, environment string) (*types.Event, error) {
-	sampleRate := bev.SampleRate
-	if sampleRate == 0 {
-		sampleRate = 1
-	}
-	eventTime := bev.getEventTime()
-	// TODO move the following 3 lines outside of this loop; they could be done
-	// once for the entire batch instead of in every event.
-	vars := mux.Vars(req)
-	dataset := vars["datasetName"]
-	apiHost, err := r.Config.GetHoneycombAPI()
-	if err != nil {
-		return nil, err
-	}
-	return &types.Event{
-		Context:     req.Context(),
-		APIHost:     apiHost,
-		APIKey:      apiKey,
-		Dataset:     dataset,
-		Environment: environment,
-		SampleRate:  uint(sampleRate),
-		Timestamp:   eventTime,
-		Data:        bev.Data,
-	}, nil
 }
 
 type batchedEvent struct {
@@ -662,6 +697,13 @@ func (b *batchedEvent) getEventTime() time.Time {
 	}
 
 	return getEventTime(b.Timestamp)
+}
+
+func (b *batchedEvent) getSampleRate() uint {
+	if b.SampleRate == 0 {
+		return defaultSampleRate
+	}
+	return uint(b.SampleRate)
 }
 
 // getEventTime tries to guess the time format in our time header!
@@ -782,10 +824,19 @@ type cacheItem struct {
 // get queries the cached items, returning cache hits that have not expired.
 // Cache missed use the configured getFn to populate the cache.
 func (c *environmentCache) get(key string) (string, error) {
+	var val string
+	// get read lock so that we don't attempt to read from the map
+	// while another routine has a write lock and is actively writing
+	// to the map.
+	c.mutex.RLock()
 	if item, ok := c.items[key]; ok {
 		if time.Now().Before(item.expiresAt) {
-			return item.value, nil
+			val = item.value
 		}
+	}
+	c.mutex.RUnlock()
+	if val != "" {
+		return val, nil
 	}
 
 	// get write lock early so we don't execute getFn in parallel so the
@@ -847,10 +898,7 @@ func (r *Router) getEnvironmentName(apiKey string) (string, error) {
 }
 
 func (r *Router) lookupEnvironment(apiKey string) (string, error) {
-	apiEndpoint, err := r.Config.GetHoneycombAPI()
-	if err != nil {
-		return "", fmt.Errorf("failed to read Honeycomb API config value. %w", err)
-	}
+	apiEndpoint := r.Config.GetHoneycombAPI()
 	authURL, err := url.Parse(apiEndpoint)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse Honeycomb API URL config value. %w", err)
@@ -900,13 +948,68 @@ func (r *Router) Watch(req *grpc_health_v1.HealthCheckRequest, server grpc_healt
 	})
 }
 
+// startGRPCHealthMonitor starts a goroutine that periodically checks the health of the system and updates the grpc health server
+func (r *Router) startGRPCHealthMonitor() {
+	const (
+		system      = "" // empty string represents the generic health of the whole system (corresponds to "ready")
+		systemReady = "ready"
+		systemAlive = "alive"
+	)
+	r.iopLogger.Debug().Logf("running grpc health monitor")
+
+	setStatus := func(svc string, stat bool) {
+		if stat {
+			r.hsrv.SetServingStatus(svc, grpc_health_v1.HealthCheckResponse_SERVING)
+		} else {
+			r.hsrv.SetServingStatus(svc, grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+		}
+	}
+
+	r.doneWG.Add(1)
+	go func() {
+		defer r.doneWG.Done()
+		// TODO: Does this time need to be configurable?
+		watchticker := time.NewTicker(3 * time.Second)
+		defer watchticker.Stop()
+		for {
+			select {
+			case <-watchticker.C:
+				alive := r.Health.IsAlive()
+				ready := r.Health.IsReady()
+
+				// we can just update everything because the grpc health server will only send updates if the status changes
+				setStatus(systemReady, ready)
+				setStatus(systemAlive, alive)
+				setStatus(system, ready && alive)
+			case <-r.donech:
+				return
+			}
+		}
+	}()
+}
+
 // AddOTLPMuxxer adds muxxer for OTLP requests
 func (r *Router) AddOTLPMuxxer(muxxer *mux.Router) {
 	// require an auth header for OTLP requests
 	otlpMuxxer := muxxer.PathPrefix("/v1/").Methods("POST").Subrouter()
-	otlpMuxxer.Use(r.apiKeyChecker)
 
 	// handle OTLP trace requests
-	otlpMuxxer.HandleFunc("/traces", r.postOTLP).Name("otlp")
-	otlpMuxxer.HandleFunc("/traces/", r.postOTLP).Name("otlp")
+	otlpMuxxer.HandleFunc("/traces", r.postOTLPTrace).Name("otlp_traces")
+	otlpMuxxer.HandleFunc("/traces/", r.postOTLPTrace).Name("otlp_traces")
+
+	// handle OTLP logs requests
+	otlpMuxxer.HandleFunc("/logs", r.postOTLPLogs).Name("otlp_logs")
+	otlpMuxxer.HandleFunc("/logs/", r.postOTLPLogs).Name("otlp_logs")
+}
+
+func getDatasetFromRequest(req *http.Request) (string, error) {
+	dataset := mux.Vars(req)["datasetName"]
+	if dataset == "" {
+		return "", fmt.Errorf("missing dataset name")
+	}
+	dataset, err := url.PathUnescape(dataset)
+	if err != nil {
+		return "", err
+	}
+	return dataset, nil
 }

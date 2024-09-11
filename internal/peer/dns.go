@@ -19,15 +19,15 @@ var (
 	peerPort     int    = 8193
 )
 
-type dnsPeers struct {
+type DnsPeers struct {
 	c         config.Config
 	peers     []string
 	peerLock  sync.Mutex
 	callbacks []func()
 }
 
-func newDnsPeers(c config.Config, done chan struct{}) (Peers, error) {
-	peers := &dnsPeers{
+func NewDnsPeers(c config.Config, done chan struct{}) (Peers, error) {
+	peers := &DnsPeers{
 		c: c,
 	}
 	peerList, err := peers.getFromDns()
@@ -44,7 +44,7 @@ func newDnsPeers(c config.Config, done chan struct{}) (Peers, error) {
 	return peers, nil
 }
 
-func (p *dnsPeers) getFromDns() ([]string, error) {
+func (p *DnsPeers) getFromDns() ([]string, error) {
 	ips, err := net.LookupIP(internalAddr)
 	if err != nil {
 		return nil, err
@@ -62,7 +62,7 @@ func (p *dnsPeers) getFromDns() ([]string, error) {
 	return addrs, nil
 }
 
-func (p *dnsPeers) GetPeers() ([]string, error) {
+func (p *DnsPeers) GetPeers() ([]string, error) {
 	p.peerLock.Lock()
 	defer p.peerLock.Unlock()
 	retList := make([]string, len(p.peers))
@@ -70,7 +70,40 @@ func (p *dnsPeers) GetPeers() ([]string, error) {
 	return retList, nil
 }
 
-func (p *dnsPeers) watchPeers(done chan struct{}) {
+func (p *DnsPeers) GetInstanceID() (string, error) {
+	p.peerLock.Lock()
+	defer p.peerLock.Unlock()
+	machineID, _ := os.Hostname()
+
+	appName := os.Getenv("FLY_APP_NAME")
+	sixpnAddr := fmt.Sprintf("%s.vm.%s.internal", machineID, appName)
+
+	ips, err := net.LookupIP(sixpnAddr)
+	if err != nil {
+		return "", err
+	}
+
+	if len(ips) < 0 {
+		return "", fmt.Errorf("dns result empty")
+	}
+
+	addr := url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(ips[0].String(), strconv.Itoa(peerPort)),
+	}
+
+	return addr.String(), nil
+}
+
+func (p *DnsPeers) Start() (err error) {
+	return nil
+}
+
+func (p *DnsPeers) Ready() error {
+	return nil
+}
+
+func (p *DnsPeers) watchPeers(done chan struct{}) {
 	oldPeerList := p.peers
 	sort.Strings(oldPeerList)
 	tk := time.NewTicker(refreshCacheInterval)
@@ -110,6 +143,21 @@ func (p *dnsPeers) watchPeers(done chan struct{}) {
 	}
 }
 
-func (p *dnsPeers) RegisterUpdatedPeersCallback(callback func()) {
+func (p *DnsPeers) RegisterUpdatedPeersCallback(callback func()) {
 	p.callbacks = append(p.callbacks, callback)
+}
+
+// equal tells whether a and b contain the same elements.
+// A nil argument is equivalent to an empty slice.
+// lifted from https://yourbasic.org/golang/compare-slices/
+func equal(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, v := range a {
+		if v != b[i] {
+			return false
+		}
+	}
+	return true
 }

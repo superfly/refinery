@@ -27,6 +27,15 @@ test_all: test_results wait_for_redis
 test_results:
 	@mkdir -p test_results
 
+local_image: export KO_DOCKER_REPO=ko.local
+local_image: export CIRCLE_TAG=$(shell git describe --always --match "v[0-9]*" --tags)
+local_image: export CIRCLE_BRANCH=$(shell git rev-parse --abbrev-ref HEAD)
+local_image: export CIRCLE_SHA1=$(shell git rev-parse HEAD)
+local_image: export CIRCLE_BUILD_NUM=''
+#: build the release image locally, available as "ko.local/refinery:<commit>"
+local_image:
+	./build-docker.sh
+
 .PHONY: wait_for_redis
 # wait for Redis to become available for test suite
 wait_for_redis: dockerize
@@ -68,17 +77,23 @@ clean:
 
 .PHONY: install-tools
 install-tools:
-	go install github.com/google/go-licenses@latest
+	go install github.com/google/go-licenses/v2@v2.0.0-alpha.1
 
 .PHONY: update-licenses
 update-licenses: install-tools
 	rm -rf LICENSES; \
-	go-licenses save ./cmd/refinery --save_path LICENSES;
+	#: We ignore the standard library (go list std) as a workaround for \
+	"https://github.com/google/go-licenses/issues/244." The awk script converts the output \
+  of `go list std` (line separated modules) to the input that `--ignore` expects (comma separated modules).
+	go-licenses save --save_path LICENSES --ignore "github.com/honeycombio/refinery" \
+		--ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') ./cmd/refinery;
 
 .PHONY: verify-licenses
 verify-licenses: install-tools
-	go-licenses save ./cmd/refinery --save_path temp; \
-    if diff temp LICENSES > /dev/null; then \
+	go-licenses save --save_path temp --ignore "github.com/honeycombio/refinery" \
+		--ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') ./cmd/refinery; \
+	chmod +r temp; \
+    if diff temp LICENSES; then \
       echo "Passed"; \
       rm -rf temp; \
     else \

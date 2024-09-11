@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -16,17 +17,20 @@ import (
 	"github.com/facebookgo/inject"
 	"github.com/honeycombio/refinery/collect"
 	"github.com/honeycombio/refinery/config"
+	"github.com/honeycombio/refinery/internal/health"
 	"github.com/honeycombio/refinery/internal/peer"
 	"github.com/honeycombio/refinery/logger"
 	"github.com/honeycombio/refinery/metrics"
+	"github.com/honeycombio/refinery/sharder"
 	"github.com/honeycombio/refinery/transmit"
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	trace "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"github.com/gorilla/mux"
-	"github.com/honeycombio/refinery/sharder"
 	"github.com/klauspost/compress/zstd"
 	"github.com/vmihailenco/msgpack/v5"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -317,7 +321,10 @@ func TestDebugTrace(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	router := &Router{
-		Sharder: &TestSharder{},
+		Sharder: &sharder.MockSharder{
+			Self:  &sharder.TestShard{Addr: "http://localhost:12345"},
+			Other: &sharder.TestShard{Addr: "http://localhost:12345"},
+		},
 	}
 
 	router.debugTrace(rr, req)
@@ -473,15 +480,18 @@ func TestDependencyInjection(t *testing.T) {
 
 		&inject.Object{Value: &config.MockConfig{}},
 		&inject.Object{Value: &logger.NullLogger{}},
+		&inject.Object{Value: noop.NewTracerProvider().Tracer("test"), Name: "tracer"},
 		&inject.Object{Value: http.DefaultTransport, Name: "upstreamTransport"},
 		&inject.Object{Value: &transmit.MockTransmission{}, Name: "upstreamTransmission"},
 		&inject.Object{Value: &transmit.MockTransmission{}, Name: "peerTransmission"},
-		&inject.Object{Value: &TestSharder{}},
+		&inject.Object{Value: &sharder.MockSharder{}},
 		&inject.Object{Value: &collect.InMemCollector{}},
 		&inject.Object{Value: &metrics.NullMetrics{}, Name: "metrics"},
 		&inject.Object{Value: &metrics.NullMetrics{}, Name: "genericMetrics"},
 		&inject.Object{Value: &collect.MockStressReliever{}, Name: "stressRelief"},
 		&inject.Object{Value: &peer.MockPeers{}},
+		&inject.Object{Value: &health.Health{}},
+		&inject.Object{Value: clockwork.NewFakeClock()},
 	)
 	if err != nil {
 		t.Error(err)
@@ -490,23 +500,6 @@ func TestDependencyInjection(t *testing.T) {
 		t.Error(err)
 	}
 }
-
-type TestSharder struct{}
-
-func (s *TestSharder) MyShard() sharder.Shard { return nil }
-
-func (s *TestSharder) WhichShard(string) sharder.Shard {
-	return &TestShard{
-		addr: "http://localhost:12345",
-	}
-}
-
-type TestShard struct {
-	addr string
-}
-
-func (s *TestShard) Equals(other sharder.Shard) bool { return true }
-func (s *TestShard) GetAddress() string              { return s.addr }
 
 func TestEnvironmentCache(t *testing.T) {
 	t.Run("calls getFn on cache miss", func(t *testing.T) {
@@ -611,4 +604,120 @@ func TestGRPCHealthProbeWatch(t *testing.T) {
 
 	sentMessage := mockServer.GetSentMessages()[0]
 	assert.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, sentMessage.Status)
+}
+
+func TestGetDatasetFromRequest(t *testing.T) {
+	testCases := []struct {
+		name                string
+		datasetName         string
+		expectedDatasetName string
+		expectedError       error
+	}{
+		{
+			name:          "empty dataset name",
+			datasetName:   "",
+			expectedError: fmt.Errorf("missing dataset name"),
+		},
+		{
+			name:          "dataset name with invalid URL encoding",
+			datasetName:   "foo%2",
+			expectedError: url.EscapeError("%2"),
+		},
+		{
+			name:                "normal dataset name",
+			datasetName:         "foo",
+			expectedDatasetName: "foo",
+		},
+		{
+			name:                "dataset name with numbers",
+			datasetName:         "foo123",
+			expectedDatasetName: "foo123",
+		},
+		{
+			name:                "dataset name with hyphen",
+			datasetName:         "foo-bar",
+			expectedDatasetName: "foo-bar",
+		},
+		{
+			name:                "dataset name with underscore",
+			datasetName:         "foo_bar",
+			expectedDatasetName: "foo_bar",
+		},
+		{
+			name:                "dataset name with tilde",
+			datasetName:         "foo~bar",
+			expectedDatasetName: "foo~bar",
+		},
+		{
+			name:                "dataset name with period",
+			datasetName:         "foo.bar",
+			expectedDatasetName: "foo.bar",
+		},
+		{
+			name:                "dataset name with URL encoded hyphen",
+			datasetName:         "foo%2Dbar",
+			expectedDatasetName: "foo-bar",
+		},
+		{
+			name:                "dataset name with URL encoded underscore",
+			datasetName:         "foo%5Fbar",
+			expectedDatasetName: "foo_bar",
+		},
+		{
+			name:                "dataset name with URL encoded tilde",
+			datasetName:         "foo%7Ebar",
+			expectedDatasetName: "foo~bar",
+		},
+		{
+			name:                "dataset name with URL encoded period",
+			datasetName:         "foo%2Ebar",
+			expectedDatasetName: "foo.bar",
+		},
+		{
+			name:                "dataset name with URL encoded forward slash",
+			datasetName:         "foo%2Fbar",
+			expectedDatasetName: "foo/bar",
+		},
+		{
+			name:                "dataset name with URL encoded colon",
+			datasetName:         "foo%3Abar",
+			expectedDatasetName: "foo:bar",
+		},
+		{
+			name:                "dataset name with URL encoded square brackets",
+			datasetName:         "foo%5Bbar%5D",
+			expectedDatasetName: "foo[bar]",
+		},
+		{
+			name:                "dataset name with URL encoded parentheses",
+			datasetName:         "foo%28bar%29",
+			expectedDatasetName: "foo(bar)",
+		},
+		{
+			name:                "dataset name with URL encoded curly braces",
+			datasetName:         "foo%7Bbar%7D",
+			expectedDatasetName: "foo{bar}",
+		},
+		{
+			name:                "dataset name with URL encoded percent",
+			datasetName:         "foo%25bar",
+			expectedDatasetName: "foo%bar",
+		},
+		{
+			name:                "dataset name with URL encoded ampersand",
+			datasetName:         "foo%26bar",
+			expectedDatasetName: "foo&bar",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", "/1/events/dataset", nil)
+			req = mux.SetURLVars(req, map[string]string{"datasetName": tc.datasetName})
+
+			dataset, err := getDatasetFromRequest(req)
+			assert.Equal(t, tc.expectedError, err)
+			assert.Equal(t, tc.expectedDatasetName, dataset)
+		})
+	}
 }

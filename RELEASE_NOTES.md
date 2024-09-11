@@ -1,6 +1,206 @@
 # Release Notes
 
-While [CHANGELOG.md](./CHANGELOG.md) contains detailed documentation and links to all of the source code changes in a given release, this document is intended to be aimed at a more comprehensible version of the contents of the release from the point of view of users of Refinery.
+While [CHANGELOG.md](./CHANGELOG.md) contains detailed documentation and links to all the source code changes in a given release, this document is intended to be aimed at a more comprehensible version of the contents of the release from the point of view of users of Refinery.
+
+## Version 2.8.0
+
+This release has a several significant changes that makes Refinery easier to operate at scale.
+
+### Draining during Shutdown
+
+When one Refinery in a cluster shuts down, it now:
+
+* Immediately marks itself as "not ready" so that load balancers will stop sending it data
+* Immediately removes itself from the peer list so that other Refineries will stop sending data
+* Recalculates the appropriate destination for all the traces it has been tracking, and forwards those spans to the correct instance.
+
+When other Refineries in a cluster see that the number of peers has changed, they:
+
+* Check all the traces they have been tracking; for any that belong to a different Refinery, all the spans are forwarded to the new destination. (On average in an N-node cluster, 1/N of the existing traces will need to move.)
+
+### Redis Cluster Support
+
+Refinery now supports Redis instances deployed in Cluster Mode. There is a new configuration parameter, `ClusterHosts`, which can be used to enable this support.
+
+This should make it easier to configure AWS ElastiCache for use with Refinery, since ElastiCache now uses Redis Cluster Mode by default.
+
+In addition, Refinery now supports the use of TLS for communications with Redis.
+
+### SpanLimit
+
+Until this release, Refinery has marked a trace for trace decision when either:
+
+* The root span arrives
+* The TraceTimeout expires
+
+Release 2.8 introduces a new feature, `SpanLimit`, which provides a third way to cause Refinery to make a trace decision. It sets the maximum number of descendants that a trace can have before it gets marked for a trace decision. This is to help with the memory consumption due to very large traces.
+
+Suppose, for example, that a service generates a single trace with 10,000 spans. If SpanLimit is set to 1000, once the first 1000 spans have arrived, Refinery will immediately make a decision to keep or drop the trace. Every additional span is dispatched (using the same decision) without storing it. This means that Refinery never had to keep all 10,000 spans in its memory at one time.
+
+For installations that sometimes see very large traces, this feature can have a significant impact on memory usage within a cluster, and can effectively prevent one Refinery in a cluster from running out of memory due to a big trace.
+
+### `in` and `not-in` Operators in Rules
+
+This release introduces `in` and `not-in` operators for rules. These operators allow the Value field to contain a list of values, and efficiently test for the presence or absence of a particular span field within that list.
+A potential use for these operators would be to keep or drop traces originating from within a specific list of services.
+
+### More flexible API key management with `SendKey` and `SendKeyMode`
+
+This release allows an API key to be deployed alongside Refinery rather than with the sources of telemetry using the `SendKey` configuration.
+The `SendKeyMode` value allows `SendKey` to be used (along with the existing `ReceiveKeys` value) in a variety of modes depending on the security requirements.
+
+### Other Improvements
+
+* Refinery rules now allow specifying `root.` prefixes for fields in dynamic samplers.
+* The performance of the drop cache has been improved, which should help with stability for systems with a very high drop rate.
+* The default maximum message sizes for OTLP have been increased from 5MB to 15MB.
+* It is now possible to specify multiple config files, which can allow a layered approach to configuration (separating keys from other configuration, for example).
+
+
+## Version 2.7.0
+
+This release is a minor release focused on better cluster stability and data quality with a new system for communicating peer information across nodes.
+As a result, clusters should generally behave more consistently.
+
+Refinery 2.7 lays the groundwork for substantial future changes to Refinery.
+
+### Publish/Subscribe on Redis
+In this release, Redis is no longer a database for storing a list of peers.
+Instead, it is used as a more general publish/subscribe framework for rapidly sharing information between nodes in the cluster.
+Things that are shared with this connection are:
+
+- Peer membership
+- Stress levels
+- News of configuration changes
+
+Because of this mechanism, Refinery will now react more quickly to changes in any of these factors.
+When one node detects a configuration change, all of its peers will be told about it immediately.
+
+In addition, Refinery now publishes individual stress levels between peers.
+Nodes calculate a cluster stress level as a weighted average (with nodes that are more stressed getting more weight).
+If an individual node is stressed, it can enter stress relief individually.
+This may happen, for example, when a single giant trace is concentrated on one node.
+If the cluster as a whole is being stressed by a general burst in traffic, the entire cluster should now enter or leave stress relief at approximately the same time.
+
+If your existing Redis instance is particularly small, you may find it necessary to increase its CPU or network allocations.
+
+### Health checks now include both liveness and readiness
+
+Refinery has always had only a liveness check on `/alive`, which always simply returned ok.
+
+Starting with this release, Refinery now supports both `/alive` and `/ready`, which are based on internal status reporting.
+
+The liveness check is alive whenever Refinery is awake and internal systems are functional.
+It will return a failure if any of the monitored systems fail to report in time.
+
+The readiness check returns ready whenever the monitored systems indicate readiness.
+It will return a failure if any internal system returns not ready.
+This is usually used to indicate to a load balancer that no new traffic should go to this node.
+In this release, this will only happen when a Refinery node is shutting down.
+
+### Metrics changes
+There have also been some minor changes to metrics in this release:
+
+We have two new metrics called `individual_stress_level` (the stress level as seen by a single node) and `cluster_stress_level` (the aggregated cluster level).
+The `stress_level` metric indicates the maximum of the two values; it is this value which is used to determine whether an individual node activates stress relief.
+
+There is also a new pair of metrics, `config_hash` and `rule_config_hash`.
+These are numeric Gauge metrics that are set to the numeric value of the last 4 hex digits of the hash of the current config files.
+These can be used to track that all refineries are using the same configuration file.
+
+### Disabling Redis and using a static list of peers
+Specifying `PeerManagement.Type=file` will cause Refinery to use the fixed list of peers found in the configuration.
+This means that Refinery will operate without sharing changes to peers, stress, or configuration, as it has in previous releases.
+
+### Config Change notifications
+When deploying a cluster in Kubernetes, it is often the case that configurations are managed as a ConfigMap.
+In the default setup, ConfigMaps are eventually consistent.
+This may mean that one Refinery node will detect a configuration change and broadcast news of it, but a different node that receives the news will attempt to read the data and get the previous configuration.
+In this situation, the change will still be detected by all Refineries within the `ConfigReloadInterval`.
+
+## Version 2.6.1
+
+This is a bug fix release.
+In the log handling logic newly introduced in v2.6.0, Refinery would incorrectly consider log events to be root spans in a trace.
+After this fix, log events can never be root spans.
+This is recommended for everyone who wants to use the new log handling capabilities.
+
+## Version 2.6.0
+
+With this release, Refinery begins the process of integrating multiple telemetry signal types by handling logs as well as traces.
+Refinery now handles the OpenTelemetry `/logs` endpoints over both gRPC and HTTP:
+- Log records that are associated with a trace by including a TraceID are sampled alongside the trace's spans.
+- Log records that do not have a TraceID are treated like regular events and forwarded directly to Honeycomb.
+
+It also includes support for URL encoded dataset names in the non-OpenTelemetry URL paths.
+
+## Version 2.5.2
+
+This release fixes a race condition in OTel Metrics that caused Refinery to crash.
+This update is recommended for everyone who has OTelMetrics enabled.
+
+## Version 2.5.1
+
+This is a bug fix release for a concurrent map read panic when loading items from the internal cache.
+It also includes improvements for validation of ingest keys and resolves a lock issue during startup.
+
+## Version 2.5
+
+This release's main new feature adds support of Honeycomb Classic ingest keys.
+There is also a performance improvement for the new `root.` rule feature, and a new metric to track traces dropped by rules.
+This release is a recommended upgrade for anyone wishing to use ingest keys within a Honeycomb Classic environment.
+
+## Version 2.4.3
+
+A bug fix release for a regression introduced in the 2.4.2 bug fix release.
+It was possible to trigger 500 errors in Refinery's OTLP error responses when sending traces in an unsupported content-type.
+This release is a recommended upgrade for anyone sending OTLP data to Refinery.
+
+## Version 2.4.2
+
+This is a bug fix release for returning a improperly formatted OTLP error responses.
+OTLP clients receiving the improper response would show errors about parsing the response, masking the error message within the response which complicated solving data send issues.
+This release is a recommended upgrade for anyone sending OTLP data to Refinery.
+
+## Version 2.4.1
+
+This is a bug fix release for matching fields in the root span context.
+
+The implementation in v2.4.0 can crash if the trace's root span is not present at the time a sampling decision is being made.
+Root spans are often not present when the root span is taking longer to complete than the time configured for Refinery to wait for a trace's spans to arrive (`TraceTimeout`).
+This release contains a fix for this crash and is a recommended upgrade for anyone using this new feature.
+
+## Version 2.4.0
+
+This release includes an update to allow users to specify root span context in their rules. It also includes some bug
+fixes, improvements, and dependency updates.
+
+### Root Span Context
+
+Users can now specify rules that match only the root span of a trace (i.e. `root.http.status`).
+
+### Notable Fixes
+* Previously, rules with a default of boolean `true` that we set to `false` by configuration would be overridden back to `true` when defaults were applied to the config. We have fixed this by using the `*bool` type for these values as well as adding helper functions to avoid strange behavior related to how booleans work in Go.
+
+## Version 2.3.0
+
+This release is mainly focused on some improvements to rules and bug fixes. It is recommended for all Refinery users.
+
+### Rules Improvements
+
+Users of Rules-based samplers have several new features with this release:
+
+* A new `matches` operator can match the contents of fields using a regular expression. The regular expression language supported is the one used by the Go programming language. This will enable certain advanced rules that were previously impossible to achieve. It should be noted that complex regular expressions can be significantly slower than normal comparisons, so use this feature with the appropriate level of caution.
+* A new `Fields` parameter may be used in conditions instead of `Field`. This parameter takes a list of field names, and evaluates the rule based on the first name that matches an existing field. This is intended to be used mainly when telemetry field names are changing, to avoid having to create duplicated rules.
+* Refinery now supports a "virtual" `Field` called `?.NUM_DESCENDANTS`. This field is evaluated as the current number of descendants in a trace, even if the root span has not arrived. This permits a rule that correctly evaluates the number of spans in a trace even if the trace is exceptionally long-lived. This sort of rule can be used to drop exceptionally large traces to avoid sending them to Honeycomb.
+* There is a [new documentation page](rules_conditions.md) in this repository containing detailed information on constructing rule conditions.
+
+### Other Notable Changes
+
+* Previously, spans that arrived after the trace decision had been made were simply marked with `meta.refinery.reason: late`. Now, refinery will remember and attache the reason used when the span decision was made.
+* MemorySize parameters in config can now accept a floating point value like `2.5Gb`, which is more compatible with values used in Kubernetes. This should help eliminate bugs in Helm charts.
+* OTLP requests to `/v1/traces/` will now be accepted along with `/v1/traces`, which eliminates a minor annoyance when configuring upstream senders.
+* There were many improvements to testing and documentation that should improve quality of life for contributors.
 
 ## Version 2.2.0
 

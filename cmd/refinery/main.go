@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	_ "go.uber.org/automaxprocs"
 	"golang.org/x/exp/slices"
 
@@ -18,14 +19,19 @@ import (
 	"github.com/facebookgo/startstop"
 	libhoney "github.com/honeycombio/libhoney-go"
 	"github.com/honeycombio/libhoney-go/transmission"
+	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
 
 	"github.com/honeycombio/refinery/app"
 	"github.com/honeycombio/refinery/collect"
 	"github.com/honeycombio/refinery/config"
+	"github.com/honeycombio/refinery/internal/configwatcher"
+	"github.com/honeycombio/refinery/internal/health"
+	"github.com/honeycombio/refinery/internal/otelutil"
 	"github.com/honeycombio/refinery/internal/peer"
 	"github.com/honeycombio/refinery/logger"
 	"github.com/honeycombio/refinery/metrics"
+	"github.com/honeycombio/refinery/pubsub"
 	"github.com/honeycombio/refinery/sample"
 	"github.com/honeycombio/refinery/service/debug"
 	"github.com/honeycombio/refinery/sharder"
@@ -96,12 +102,6 @@ func main() {
 		fmt.Println("Config and Rules validated successfully.")
 		os.Exit(0)
 	}
-	c.RegisterReloadCallback(func() {
-		if a.Logger != nil {
-			a.Logger.Info().Logf("configuration change was detected and the configuration was reloaded")
-		}
-	})
-
 	// get desired implementation for each dependency to inject
 	lgr := logger.GetLoggerImplementation(c)
 	collector := collect.GetCollectorImplementation(c)
@@ -116,14 +116,35 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.GetPeerTimeout())
-	defer cancel()
+	// when refinery receives a shutdown signal, we need to
+	// immediately let its peers know so they can stop sending
+	// data to it.
 	done := make(chan struct{})
-	peers, err := peer.NewPeers(ctx, c, done)
-
-	if err != nil {
-		fmt.Printf("unable to load peers: %+v\n", err)
-		os.Exit(1)
+	// set up the peer management and pubsub implementations
+	var peers peer.Peers
+	var pubsubber pubsub.PubSub
+	ptype := c.GetPeerManagementType()
+	switch ptype {
+	case "file":
+		// In the case of file peers, we do not use Redis for anything, including pubsub, so
+		// we use the local pubsub implementation. Even if we have multiple peers, these
+		// peers cannot communicate using pubsub.
+		peers = &peer.FilePeers{Done: done}
+		pubsubber = &pubsub.LocalPubSub{}
+	case "redis":
+		// if we're using redis, we need to set it up for both peers and pubsub
+		peers = &peer.RedisPubsubPeers{Done: done}
+		pubsubber = &pubsub.GoRedisPubSub{}
+	case "fly-dns":
+		flydnsPeer, err := peer.NewDnsPeers(c, done)
+		if err != nil {
+			panic(fmt.Sprintf("error loading fly-dns: %s", err))
+		}
+		peers = flydnsPeer
+		pubsubber = &pubsub.LocalPubSub{}
+	default:
+		// this should have been caught by validation
+		panic("invalid config option 'PeerManagement.Type'")
 	}
 
 	// upstreamTransport is the http transport used to send things on to Honeycomb
@@ -133,6 +154,7 @@ func main() {
 			Timeout: 10 * time.Second,
 		}).Dial,
 		TLSHandshakeTimeout: 15 * time.Second,
+		ForceAttemptHTTP2:   true,
 	}
 
 	// peerTransport is the http transport used to send things to a local peer
@@ -142,6 +164,7 @@ func main() {
 			Timeout: 3 * time.Second,
 		}).Dial,
 		TLSHandshakeTimeout: 1200 * time.Millisecond,
+		ForceAttemptHTTP2:   true,
 	}
 
 	genericMetricsRecorder := metrics.NewMetricsPrefixer("")
@@ -151,8 +174,8 @@ func main() {
 	userAgentAddition := "refinery/" + version
 	upstreamClient, err := libhoney.NewClient(libhoney.ClientConfig{
 		Transmission: &transmission.Honeycomb{
-			MaxBatchSize:          c.GetMaxBatchSize(),
-			BatchTimeout:          c.GetBatchTimeout(),
+			MaxBatchSize:          c.GetTracesConfig().GetMaxBatchSize(),
+			BatchTimeout:          time.Duration(c.GetTracesConfig().GetBatchTimeout()),
 			MaxConcurrentBatches:  libhoney.DefaultMaxConcurrentBatches,
 			PendingWorkCapacity:   uint(c.GetUpstreamBufferSize()),
 			UserAgentAddition:     userAgentAddition,
@@ -169,8 +192,8 @@ func main() {
 
 	peerClient, err := libhoney.NewClient(libhoney.ClientConfig{
 		Transmission: &transmission.Honeycomb{
-			MaxBatchSize:          c.GetMaxBatchSize(),
-			BatchTimeout:          c.GetBatchTimeout(),
+			MaxBatchSize:          c.GetTracesConfig().GetMaxBatchSize(),
+			BatchTimeout:          time.Duration(c.GetTracesConfig().GetBatchTimeout()),
 			MaxConcurrentBatches:  libhoney.DefaultMaxConcurrentBatches,
 			PendingWorkCapacity:   uint(c.GetPeerBufferSize()),
 			UserAgentAddition:     userAgentAddition,
@@ -204,6 +227,18 @@ func main() {
 		oTelMetrics = &metrics.OTelMetrics{}
 	}
 
+	resourceLib := "refinery"
+	resourceVer := version
+	tracer := trace.Tracer(noop.Tracer{})
+	shutdown := func() {}
+
+	if c.GetOTelTracingConfig().Enabled {
+		// let's set up some OTel tracing
+		tracer, shutdown = otelutil.SetupTracing(c.GetOTelTracingConfig(), resourceLib, resourceVer)
+	}
+
+	defer shutdown()
+
 	// we need to include all the metrics types so we can inject them in case they're needed
 	var g inject.Graph
 	if opts.Debug {
@@ -212,6 +247,7 @@ func main() {
 	objects := []*inject.Object{
 		{Value: c},
 		{Value: peers},
+		{Value: pubsubber},
 		{Value: lgr},
 		{Value: upstreamTransport, Name: "upstreamTransport"},
 		{Value: peerTransport, Name: "peerTransport"},
@@ -222,6 +258,8 @@ func main() {
 		{Value: legacyMetrics, Name: "legacyMetrics"},
 		{Value: promMetrics, Name: "promMetrics"},
 		{Value: oTelMetrics, Name: "otelMetrics"},
+		{Value: tracer, Name: "tracer"}, // we need to use a named injection here because trace.Tracer's struct fields are all private
+		{Value: clockwork.NewRealClock()},
 		{Value: metricsSingleton, Name: "metrics"},
 		{Value: genericMetricsRecorder, Name: "genericMetrics"},
 		{Value: upstreamMetricsRecorder, Name: "upstreamMetrics"},
@@ -229,6 +267,8 @@ func main() {
 		{Value: version, Name: "version"},
 		{Value: samplerFactory},
 		{Value: stressRelief, Name: "stressRelief"},
+		{Value: &health.Health{}},
+		{Value: &configwatcher.ConfigWatcher{}},
 		{Value: &a},
 	}
 	err = g.Provide(objects...)
@@ -262,6 +302,14 @@ func main() {
 	defer startstop.Stop(g.Objects(), ststLogger)
 	if err := startstop.Start(g.Objects(), ststLogger); err != nil {
 		fmt.Printf("failed to start injected dependencies. error: %+v\n", err)
+		os.Exit(1)
+	}
+
+	// Now that all components are started, we can notify our peers that we are ready
+	// to receive data.
+	err = peers.Ready()
+	if err != nil {
+		fmt.Printf("failed to start peer management: %v\n", err)
 		os.Exit(1)
 	}
 

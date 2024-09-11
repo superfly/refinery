@@ -99,6 +99,24 @@ func validateDatatype(k string, v any, typ string) string {
 		default:
 			return fmt.Sprintf("field %s must be a string, int, float, or bool", k)
 		}
+	case "sliceorscalar":
+		switch vt := v.(type) {
+		case string, int, int64, float64, bool:
+			// we're good
+		case []any:
+			// we need to check that the slice is all the same type
+			// if it's empty or 1 element, it's fine
+			if len(v.([]any)) > 1 {
+				firstType := fmt.Sprintf("%T", vt[0])
+				for i, a := range vt {
+					if fmt.Sprintf("%T", a) != firstType {
+						return fmt.Sprintf("field %s must be a slice of all the same type, but element %d is %T", k, i, a)
+					}
+				}
+			}
+		default:
+			return fmt.Sprintf("field %s must be a list of string, int, float, or bool", k)
+		}
 	case "string":
 		if !isString(v) {
 			return fmt.Sprintf("field %s must be a string but %v is %T", k, v, v)
@@ -184,6 +202,19 @@ func validateDatatype(k string, v any, typ string) string {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return fmt.Sprintf("field %s (%v) must use an http or https scheme", k, v)
 		}
+	case "defaulttrue":
+		switch val := v.(type) {
+		case bool:
+			return ""
+		case string:
+			switch strings.ToLower(val) {
+			case "t", "true", "f", "false":
+			default:
+				return fmt.Sprintf("field %s (%v) must be 'true', 'false', 't', or 'f'", k, v)
+			}
+		default:
+			return fmt.Sprintf("field %s (%v) must be a bool or string with value true/false or 'true'/'false'/'t'/'f'", k, v)
+		}
 	default:
 		panic("unknown data type " + typ)
 	}
@@ -256,6 +287,7 @@ func (m *Metadata) Validate(data map[string]any) []string {
 			}
 		}
 		for _, validation := range field.Validations {
+		nextValidation:
 			switch validation.Type {
 			case "choice":
 				if !(isString(v) && slices.Contains(field.Choices, v.(string))) {
@@ -266,8 +298,18 @@ func (m *Metadata) Validate(data map[string]any) []string {
 				var format string
 				mask := false
 				switch validation.Arg.(string) {
+				case "apikeyOrBlank":
+					// allow an empty string as well as a valid API key
+					if v.(string) == "" {
+						break nextValidation
+					}
+					fallthrough // fallthrough to the apikey case
 				case "apikey":
-					pat = regexp.MustCompile(`^[a-f0-9]{32}|[a-zA-Z0-9]{20,23}$`)
+					// valid API key formats are:
+					// 1. 32 hex characters ("classic" Honeycomb API key)
+					// 2. 20-23 alphanumeric characters (new-style Honeycomb API key)
+					// 3. hc<1 letter region)><2 letter keytype>_<58 alphanumeric characters>} (ingest key)
+					pat = regexp.MustCompile(`^([a-f0-9]{32}|[a-zA-Z0-9]{20,23}|hc[a-z][a-z]{2}_[a-z0-9]{58})$`)
 					format = "field %s (%v) must be a valid Honeycomb API key"
 					mask = true
 				case "version":

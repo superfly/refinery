@@ -1,7 +1,7 @@
 # Honeycomb Refinery Configuration Documentation
 
 This is the documentation for the configuration file for Honeycomb's Refinery.
-It was automatically generated on 2023-12-04 at 22:34:13 UTC.
+It was automatically generated on 2024-09-05 at 17:40:33 UTC.
 
 ## The Config file
 
@@ -37,6 +37,7 @@ The remainder of this document describes the sections within the file and the fi
 - [Prometheus Metrics](#prometheus-metrics)
 - [Legacy Metrics](#legacy-metrics)
 - [OpenTelemetry Metrics](#opentelemetry-metrics)
+- [OpenTelemetry Tracing](#opentelemetry-tracing)
 - [Peer Management](#peer-management)
 - [Redis Peer Management](#redis-peer-management)
 - [Collection Settings](#collection-settings)
@@ -90,7 +91,8 @@ ConfigReloadInterval is the average interval between attempts at reloading the c
 Refinery will attempt to read its configuration and check for changes at approximately this interval.
 This time is varied by a random amount up to 10% to avoid all instances refreshing together.
 In installations where configuration changes are handled by restarting Refinery, which is often the case when using Kubernetes, disable this feature with a value of `0s`.
-If the config file is being loaded from a URL, it may be wise to increase this value to avoid overloading the file server.
+As of Refinery v2.7, news of a configuration change is immediately propagated to all peers, and they will attempt to reload their configurations.
+Note that external factors (for example, Kubernetes ConfigMaps) may cause delays in propagating configuration changes.
 
 - Not eligible for live reload.
 - Type: `duration`
@@ -169,9 +171,40 @@ AcceptOnlyListedKeys is a boolean flag that causes events arriving with API keys
 If `true`, then only traffic using the keys listed in `ReceiveKeys` is accepted.
 Events arriving with API keys not in the `ReceiveKeys` list will be rejected with an HTTP `401` error.
 If `false`, then all traffic is accepted and `ReceiveKeys` is ignored.
+This setting is applied **before** the `SendKey` and `SendKeyMode` settings.
 
 - Eligible for live reload.
 - Type: `bool`
+
+### `SendKey`
+
+SendKey is an optional Honeycomb API key that Refinery can use to send data to Honeycomb, depending on configuration.
+
+If `SendKey` is set to a valid Honeycomb key, then Refinery can use the listed key to send data.
+The exact behavior depends on the value of `SendKeyMode`.
+
+- Eligible for live reload.
+- Type: `string`
+- Example: `SetThisToAHoneycombKey`
+
+### `SendKeyMode`
+
+SendKeyMode controls how SendKey is used to replace or augment API keys used in incoming telemetry.
+
+Controls how SendKey is used to replace or supply API keys used in incoming telemetry.
+If `AcceptOnlyListedKeys` is `true`, then `SendKeys` will only be used for events with keys listed in `ReceiveKeys`.
+`none` uses the incoming key for all telemetry (default).
+`all` overwrites all keys, even missing ones, with `SendKey`.
+`nonblank` overwrites all supplied keys but will not inject `SendKey` if the incoming key is blank.
+`listedonly` overwrites only the keys listed in `ReceiveKeys`.
+`unlisted` uses the `SendKey` for all events *except* those with keys listed in `ReceiveKeys`, which use their original keys.
+`missingonly` uses the SendKey only to inject keys into events with blank keys.
+All other events use their original keys.
+
+- Eligible for live reload.
+- Type: `string`
+- Default: `none`
+- Options: `none`, `all`, `nonblank`, `listedonly`, `unlisted`, `missingonly`
 
 ## Refinery Telemetry
 
@@ -183,8 +216,8 @@ AddRuleReasonToTrace controls whether to decorate traces with Refinery rule eval
 When enabled, this setting causes traces that are sent to Honeycomb to include the field `meta.refinery.reason`.
 This field contains text indicating which rule was evaluated that caused the trace to be included.
 This setting also includes the field `meta.refinery.send_reason`, which contains the reason that the trace was sent.
-Possible values of this field are `trace_send_got_root`, which means that the root span arrived; `trace_send_expired`, which means that TraceTimeout was reached; `trace_send_ejected_full`, which means that the trace cache was full; and `trace_send_ejected_memsize`, which means that refinery was out of memory.
-These names are also the names of metrics that refinery tracks.
+Possible values of this field are `trace_send_got_root`, which means that the root span arrived; `trace_send_expired`, which means that `TraceTimeout` was reached; `trace_send_ejected_full`, which means that the trace cache was full; and `trace_send_ejected_memsize`, which means that Refinery was out of memory.
+These names are also the names of metrics that Refinery tracks.
 We recommend enabling this setting whenever a rules-based sampler is in use, as it is useful for debugging and understanding the behavior of your Refinery installation.
 
 - Eligible for live reload.
@@ -231,12 +264,12 @@ If `true`, then Refinery will add the following tag to all traces: - `meta.refin
 `Traces` contains configuration for how traces are managed.
 ### `SendDelay`
 
-SendDelay is the duration to wait before sending a trace.
+SendDelay is the duration to wait after the root span arrives before sending a trace.
 
-This setting is a short timer that is triggered when a trace is complete.
+This setting is a short timer that is triggered when a trace is marked complete by the arrival of the root span.
 Refinery waits for this duration before sending the trace.
-The reason for this setting is to allow for small network delays or clock jitters to elapse and any final spans to arrive before sending the trace.
-Set to "0" for immediate sending.
+This setting exists to allow for asynchronous spans and small network delays to elapse before sending the trace.
+`SendDelay` is not applied if the `TraceTimeout` expires or the `SpanLimit` is reached.
 
 - Eligible for live reload.
 - Type: `duration`
@@ -258,13 +291,28 @@ TraceTimeout is the duration to wait before making the trace decision on an inco
 
 A long timer; it represents the outside boundary of how long to wait before making the trace decision about an incomplete trace.
 Normally trace decisions (send or drop) are made when the root span arrives.
-Sometimes the root span never arrives (for example, due to crashes) and this timer ensures sending a trace even without having received the root span.
+Sometimes the root span never arrives (for example, due to crashes).
+Once this timer fires, Refinery will make a trace decision based on the spans that have arrived so far.
+This ensures sending a trace even when the root span never arrives.
+After the trace decision has been made, Refinery retains a record of that decision for a period of time.
+When additional spans (including the root span) arrive, they will be kept or dropped based on the original decision.
 If particularly long-lived traces are present in your data, then you should increase this timer.
 Note that this increase will also increase the memory requirements for Refinery.
 
 - Eligible for live reload.
 - Type: `duration`
 - Default: `60s`
+
+### `SpanLimit`
+
+SpanLimit is the number of spans after which a trace becomes eligible for a trace decision.
+
+This setting helps to keep memory usage under control.
+If a trace has more than this set number of spans, then it becomes eligible for a trace decision.
+It's most helpful in a situation where a sudden burst of many spans in a large trace hits Refinery all at once, causing memory usage to spike and possibly crashing Refinery.
+
+- Eligible for live reload.
+- Type: `int`
 
 ### `MaxBatchSize`
 
@@ -306,7 +354,7 @@ If this value is not specified, then the debug service runs on the first open po
 
 ### `QueryAuthToken`
 
-QueryAuthToken is the token that must be specified to access the `/query` endpoint.
+QueryAuthToken is the token that must be specified to access the `/query` endpoint. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
 
 This token must be specified with the header "X-Honeycomb-Refinery-Query" in order for a `/query` request to succeed.
 These `/query` requests are intended for debugging Refinery during setup and are not typically needed in normal operation.
@@ -389,7 +437,7 @@ Refinery's internal logs will be sent to this host using the standard Honeycomb 
 
 ### `APIKey`
 
-APIKey is the API key used to send Refinery's logs to Honeycomb.
+APIKey is the API key used to send Refinery's logs to Honeycomb. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
 
 It is recommended that you create a separate team and key for Refinery logs.
 
@@ -518,7 +566,7 @@ Refinery's internal metrics will be sent to this host using the standard Honeyco
 
 ### `APIKey`
 
-APIKey is the API key used by Refinery to send its metrics to Honeycomb.
+APIKey is the API key used by Refinery to send its metrics to Honeycomb. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
 
 It is recommended that you create a separate team and key for Refinery metrics.
 
@@ -575,7 +623,7 @@ Refinery's internal metrics will be sent to the `/v1/metrics` endpoint on this h
 
 ### `APIKey`
 
-APIKey is the API key used to send Honeycomb metrics via OpenTelemetry.
+APIKey is the API key used to send Honeycomb metrics via OpenTelemetry. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
 
 It is recommended that you create a separate team and key for Refinery metrics.
 If this is blank, then Refinery will not set the Honeycomb-specific headers for OpenTelemetry, and your `APIHost` must be set to a valid OpenTelemetry endpoint.
@@ -617,6 +665,61 @@ In rare circumstances, compression costs may outweigh the benefits, in which cas
 - Default: `gzip`
 - Options: `none`, `gzip`
 
+## OpenTelemetry Tracing
+
+`OTelTracing` contains configuration for Refinery's own tracing.
+### `Enabled`
+
+Enabled controls whether to send Refinery's own OpenTelemetry traces.
+
+The setting specifies if Refinery sends traces.
+
+- Not eligible for live reload.
+- Type: `bool`
+
+### `APIHost`
+
+APIHost is the URL of the OpenTelemetry API to which traces will be sent.
+
+Refinery's internal traces will be sent to the `/v1/traces` endpoint on this host.
+
+- Not eligible for live reload.
+- Type: `url`
+- Default: `https://api.honeycomb.io`
+
+### `APIKey`
+
+APIKey is the API key used to send Refinery's traces to Honeycomb. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
+
+It is recommended that you create a separate team and key for Refinery telemetry.
+If this value is blank, then Refinery will not set the Honeycomb-specific headers for OpenTelemetry, and your `APIHost` must be set to a valid OpenTelemetry endpoint.
+
+- Not eligible for live reload.
+- Type: `string`
+- Example: `SetThisToAHoneycombKey`
+- Environment variable: `REFINERY_HONEYCOMB_TRACES_API_KEY, REFINERY_HONEYCOMB_API_KEY`
+
+### `Dataset`
+
+Dataset is the Honeycomb dataset to which Refinery sends its OpenTelemetry metrics.
+
+Only used if `APIKey` is specified.
+
+- Not eligible for live reload.
+- Type: `string`
+- Default: `Refinery Traces`
+
+### `SampleRate`
+
+SampleRate is the rate at which Refinery samples its own traces.
+
+This is the Honeycomb sample rate used to sample traces sent by Refinery.
+Since each incoming span generates multiple outgoing spans, a minimum sample rate of `100` is strongly advised.
+
+- Eligible for live reload.
+- Type: `int`
+- Default: `100`
+
 ## Peer Management
 
 `PeerManagement` controls how the Refinery cluster communicates between peers.
@@ -626,7 +729,10 @@ Type is the type of peer management to use.
 
 Peer management is the mechanism by which Refinery locates its peers.
 `file` means that Refinery gets its peer list from the Peers list in this config file.
-`redis` means that Refinery self-registers with a Redis instance and gets its peer list from there.
+It also prevents Refinery from using a publish/subscribe mechanism to propagate peer lists, stress levels, and configuration changes.
+`redis` means that Refinery uses a Publish/Subscribe mechanism, implemented on Redis, to propagate peer lists, stress levels, and notification of configuration changes much more quickly than the legacy mechanism.
+The recommended setting is `redis`, especially for new installations.
+If `redis` is specified, fields in `RedisPeerManagement` must also be set.
 
 - Not eligible for live reload.
 - Type: `string`
@@ -672,16 +778,16 @@ If this value is specified, then Refinery will use the first IPV6 unicast addres
 Peers is the list of peers to use when Type is "file", excluding self.
 
 This list is ignored when Type is "redis".
-The format is a list of strings of the form "host:port".
+The format is a list of strings of the form "scheme://host:port".
 
 - Not eligible for live reload.
 - Type: `stringarray`
-- Example: `192.168.1.11:8081,192.168.1.12:8081`
+- Example: `http://192.168.1.11:8081,http://192.168.1.12:8081`
 
 ## Redis Peer Management
 
 `RedisPeerManagement` controls how the Refinery cluster communicates between peers when using Redis.
-Only applies when `PeerManagement.Type` is "redis".
+Does not apply when `PeerManagement.Type` is "file".
 
 ### `Host`
 
@@ -694,9 +800,21 @@ Must be in the form `host:port`.
 - Example: `localhost:6379`
 - Environment variable: `REFINERY_REDIS_HOST`
 
+### `ClusterHosts`
+
+ClusterHosts is a list of host and port pairs for the instances in a Redis Cluster, and used for managing peer cluster membership.
+
+This configuration enables Refinery to connect to a Redis deployment setup in Cluster Mode.
+Each entry in the list should follow the format `host:port`.
+If `ClusterHosts` is specified, the `Host` setting will be ignored.
+
+- Not eligible for live reload.
+- Type: `stringarray`
+- Example: `- localhost:6379`
+
 ### `Username`
 
-Username is the username used to connect to Redis for peer cluster membership management.
+Username is the username used to connect to Redis for peer cluster membership management. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
 
 Many Redis installations do not use this field.
 
@@ -706,7 +824,7 @@ Many Redis installations do not use this field.
 
 ### `Password`
 
-Password is the password used to connect to Redis for peer cluster membership management.
+Password is the password used to connect to Redis for peer cluster membership management. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
 
 Many Redis installations do not use this field.
 
@@ -716,36 +834,13 @@ Many Redis installations do not use this field.
 
 ### `AuthCode`
 
-AuthCode is the string used to connect to Redis for peer cluster membership management using an explicit AUTH command.
+AuthCode is the string used to connect to Redis for peer cluster membership management using an explicit AUTH command. Setting this value via a command line flag may expose credentials - it is recommended to use the environment variable or a configuration file.
 
 Many Redis installations do not use this field.
 
 - Not eligible for live reload.
 - Type: `string`
 - Environment variable: `REFINERY_REDIS_AUTH_CODE`
-
-### `Prefix`
-
-Prefix is a string used as a prefix for the keys in Redis while storing the peer membership.
-
-It might be useful to override this in any situation where multiple Refinery clusters or multiple applications want to share a single Redis instance.
-It may not be blank.
-
-- Not eligible for live reload.
-- Type: `string`
-- Default: `refinery`
-- Example: `customPrefix`
-
-### `Database`
-
-Database is the database number to use for the Redis instance storing the peer membership.
-
-An integer from 0-15 indicating the database number to use for the Redis instance storing the peer membership.
-It might be useful to set this in any situation where multiple Refinery clusters or multiple applications want to share a single Redis instance.
-
-- Not eligible for live reload.
-- Type: `int`
-- Example: `1`
 
 ### `UseTLS`
 
@@ -785,8 +880,10 @@ This is not recommended for production use since a burst of traffic could cause 
 
 CacheCapacity is the number of traces to keep in the cache's circular buffer.
 
-The collection cache is used to collect all spans into a trace as well as remember the sampling decision for any spans that might come in after the trace has been marked "complete" (either by timing out or seeing the root span).
-The number of traces in the cache should be many multiples (100x to 1000x) of the total number of concurrently active traces (trace throughput * trace duration).
+The collection cache is used to collect all active spans into traces.
+It is organized as a circular buffer.
+When the buffer wraps around, Refinery will try a few times to find an empty slot; if it fails, it starts ejecting traces from the cache earlier than would otherwise be necessary.
+Ideally, the size of the cache should be many multiples (100x to 1000x) of the total number of concurrently active traces (average trace throughput * average trace duration).
 
 - Eligible for live reload.
 - Type: `int`
@@ -861,6 +958,28 @@ If set, `Collections.AvailableMemory` must not be defined.
 
 - Eligible for live reload.
 - Type: `memorysize`
+
+### `DisableRedistribution`
+
+DisableRedistribution controls whether to transmit traces in cache to remaining peers during cluster scaling event.
+
+If `true`, Refinery will NOT forward live traces in its cache to the rest of the peers when peers join or leave the cluster.
+By disabling this behavior, it can help to prevent disruptive bursts of network traffic when large traces with long `TraceTimeout` are redistributed.
+
+- Eligible for live reload.
+- Type: `bool`
+
+### `ShutdownDelay`
+
+ShutdownDelay controls the maximum time Refinery can use while draining traces at shutdown.
+
+This setting controls the duration that Refinery expects to have to drain in-process traces before shutting down an instance.
+When asked to shut down gracefully, Refinery stops accepting new spans immediately and drains the remaining traces by sending them to remaining peers.
+This value should be set to a bit less than the normal timeout period for shutting down without forcibly terminating the process.
+
+- Eligible for live reload.
+- Type: `duration`
+- Default: `15s`
 
 ## Buffer Sizes
 
@@ -966,6 +1085,7 @@ If `false`, then the gRPC server is not started and no gRPC traffic is accepted.
 
 - Not eligible for live reload.
 - Type: `bool`
+- Default: `true`
 
 ### `ListenAddr`
 
@@ -1045,7 +1165,7 @@ The size is expressed in bytes.
 
 - Not eligible for live reload.
 - Type: `memorysize`
-- Default: `5MB`
+- Default: `15MB`
 
 ### `MaxRecvMsgSize`
 
@@ -1056,7 +1176,7 @@ The size is expressed in bytes.
 
 - Not eligible for live reload.
 - Type: `memorysize`
-- Default: `5MB`
+- Default: `15MB`
 
 ## Sample Cache
 
@@ -1167,17 +1287,4 @@ This setting helps to prevent oscillations.
 - Eligible for live reload.
 - Type: `duration`
 - Default: `10s`
-
-### `MinimumStartupDuration`
-
-MinimumStartupDuration is the minimum time that Stress Relief will stay enabled.
-
-This setting is used when switching into Monitor mode.
-When Stress Relief is enabled, it will start up in stressed mode for at least this set duration of time to try to make sure that Refinery can handle the load before it begins processing it in earnest.
-This is to help address the problem of trying to bring a new node into an already-overloaded cluster.
-If this duration is `0`, then Refinery will not start in stressed mode, which will provide faster startup at the possible cost of startup instability.
-
-- Eligible for live reload.
-- Type: `duration`
-- Default: `3s`
 

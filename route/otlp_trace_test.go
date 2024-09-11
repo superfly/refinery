@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,11 +19,14 @@ import (
 	"github.com/honeycombio/refinery/transmit"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	common "go.opentelemetry.io/proto/otlp/common/v1"
 	resource "go.opentelemetry.io/proto/otlp/resource/v1"
 	trace "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -41,8 +45,23 @@ func TestOTLPHandler(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+
+	conf := &config.MockConfig{
+		GetTracesConfigVal: config.TracesConfig{
+			SendTicker:   config.Duration(2 * time.Millisecond),
+			SendDelay:    config.Duration(1 * time.Millisecond),
+			TraceTimeout: config.Duration(60 * time.Second),
+			MaxBatchSize: 500,
+		},
+		GetSamplerTypeVal: &config.DeterministicSamplerConfig{SampleRate: 1},
+		GetCollectionConfigVal: config.CollectionConfig{
+			CacheCapacity: 100,
+			MaxAlloc:      100,
+		},
+	}
+
 	router := &Router{
-		Config:               &config.MockConfig{},
+		Config:               conf,
 		Metrics:              &mockMetrics,
 		UpstreamTransmission: mockTransmission,
 		iopLogger: iopLogger{
@@ -52,17 +71,6 @@ func TestOTLPHandler(t *testing.T) {
 		Logger:           &logger.MockLogger{},
 		zstdDecoders:     decoders,
 		environmentCache: newEnvironmentCache(time.Second, nil),
-	}
-
-	conf := &config.MockConfig{
-		GetSendDelayVal:    0,
-		GetTraceTimeoutVal: 60 * time.Second,
-		GetSamplerTypeVal:  &config.DeterministicSamplerConfig{SampleRate: 1},
-		SendTickerVal:      2 * time.Millisecond,
-		GetCollectionConfigVal: config.CollectionConfig{
-			CacheCapacity: 100,
-			MaxAlloc:      100,
-		},
 	}
 
 	t.Run("span with status", func(t *testing.T) {
@@ -130,7 +138,7 @@ func TestOTLPHandler(t *testing.T) {
 			t.Errorf(`Unexpected error: %s`, err)
 		}
 
-		time.Sleep(conf.SendTickerVal * 2)
+		time.Sleep(conf.GetTracesConfigVal.GetSendTickerValue() * 2)
 
 		mockTransmission.Mux.Lock()
 		assert.Equal(t, 2, len(mockTransmission.Events))
@@ -180,7 +188,7 @@ func TestOTLPHandler(t *testing.T) {
 			t.Errorf(`Unexpected error: %s`, err)
 		}
 
-		time.Sleep(conf.SendTickerVal * 2)
+		time.Sleep(conf.GetTracesConfigVal.GetSendTickerValue() * 2)
 		assert.Equal(t, 2, len(mockTransmission.Events))
 
 		spanLink := mockTransmission.Events[1]
@@ -191,6 +199,58 @@ func TestOTLPHandler(t *testing.T) {
 		assert.Equal(t, "link", spanLink.Data["meta.annotation_type"])
 		assert.Equal(t, "link_attr_val", spanLink.Data["link_attr_key"])
 		mockTransmission.Flush()
+	})
+
+	t.Run("invalid headers", func(t *testing.T) {
+		req := &collectortrace.ExportTraceServiceRequest{}
+		body, err := proto.Marshal(req)
+		assert.NoError(t, err)
+		anEmptyRequestBody := bytes.NewReader(body) // Empty because we're testing headers, not the body.
+
+		testCases := []struct {
+			name                        string
+			requestContentType          string
+			expectedResponseStatus      int
+			expectedResponseContentType string
+			expectedResponseBody        string
+		}{
+			{
+				name:                        "no key/bad content-type",
+				requestContentType:          "application/nope",
+				expectedResponseStatus:      http.StatusUnsupportedMediaType, // Prioritize erroring on bad content type over other header issues.
+				expectedResponseContentType: "text/plain",
+				expectedResponseBody:        huskyotlp.ErrInvalidContentType.Message,
+			},
+			{
+				name:                        "no key/json",
+				requestContentType:          "application/json",
+				expectedResponseStatus:      http.StatusUnauthorized,
+				expectedResponseContentType: "application/json",
+				expectedResponseBody:        fmt.Sprintf("{\"message\":\"%s\"}", huskyotlp.ErrMissingAPIKeyHeader.Message),
+			},
+			{
+				name:                        "no key/protobuf",
+				requestContentType:          "application/protobuf",
+				expectedResponseStatus:      http.StatusUnauthorized,
+				expectedResponseContentType: "application/protobuf",
+				expectedResponseBody:        fmt.Sprintf("\x12!%s", huskyotlp.ErrMissingAPIKeyHeader.Message),
+			},
+		}
+
+		for _, tC := range testCases {
+			t.Run(tC.name, func(t *testing.T) {
+				request, err := http.NewRequest("POST", "/v1/traces", anEmptyRequestBody)
+				require.NoError(t, err)
+				request.Header = http.Header{}
+				request.Header.Set("content-type", tC.requestContentType)
+				response := httptest.NewRecorder()
+				router.postOTLPTrace(response, request)
+
+				assert.Equal(t, tC.expectedResponseStatus, response.Code)
+				assert.Equal(t, tC.expectedResponseContentType, response.Header().Get("content-type"))
+				assert.Equal(t, tC.expectedResponseBody, response.Body.String())
+			})
+		}
 	})
 
 	t.Run("can receive OTLP over HTTP/protobuf", func(t *testing.T) {
@@ -213,7 +273,7 @@ func TestOTLPHandler(t *testing.T) {
 		request.Header.Set("x-honeycomb-dataset", "dataset")
 
 		w := httptest.NewRecorder()
-		router.postOTLP(w, request)
+		router.postOTLPTrace(w, request)
 		assert.Equal(t, w.Code, http.StatusOK)
 
 		assert.Equal(t, 2, len(mockTransmission.Events))
@@ -249,7 +309,7 @@ func TestOTLPHandler(t *testing.T) {
 		request.Header.Set("x-honeycomb-dataset", "dataset")
 
 		w := httptest.NewRecorder()
-		router.postOTLP(w, request)
+		router.postOTLPTrace(w, request)
 		assert.Equal(t, w.Code, http.StatusOK)
 
 		assert.Equal(t, 2, len(mockTransmission.Events))
@@ -288,7 +348,7 @@ func TestOTLPHandler(t *testing.T) {
 		request.Header.Set("x-honeycomb-dataset", "dataset")
 
 		w := httptest.NewRecorder()
-		router.postOTLP(w, request)
+		router.postOTLPTrace(w, request)
 		assert.Equal(t, w.Code, http.StatusOK)
 
 		assert.Equal(t, 2, len(mockTransmission.Events))
@@ -315,9 +375,9 @@ func TestOTLPHandler(t *testing.T) {
 		request.Header.Set("x-honeycomb-dataset", "dataset")
 
 		w := httptest.NewRecorder()
-		router.postOTLP(w, request)
+		router.postOTLPTrace(w, request)
 		assert.Equal(t, w.Code, http.StatusOK)
-		assert.Equal(t, "", w.Body.String())
+		assert.Equal(t, "{}", w.Body.String())
 
 		assert.Equal(t, 2, len(mockTransmission.Events))
 		mockTransmission.Flush()
@@ -387,8 +447,11 @@ func TestOTLPHandler(t *testing.T) {
 		mockTransmission.Flush()
 	})
 
-	t.Run("rejects bad API keys", func(t *testing.T) {
-		router.Config.(*config.MockConfig).IsAPIKeyValidFunc = func(k string) bool { return false }
+	t.Run("rejects bad API keys - HTTP", func(t *testing.T) {
+		router.Config.(*config.MockConfig).GetAccessKeyConfigVal = config.AccessKeyConfig{
+			ReceiveKeys:          []string{},
+			AcceptOnlyListedKeys: true,
+		}
 		req := &collectortrace.ExportTraceServiceRequest{
 			ResourceSpans: []*trace.ResourceSpans{{
 				ScopeSpans: []*trace.ScopeSpans{{
@@ -408,14 +471,33 @@ func TestOTLPHandler(t *testing.T) {
 		request.Header.Set("x-honeycomb-dataset", "dataset")
 
 		w := httptest.NewRecorder()
-		router.postOTLP(w, request)
-		assert.Equal(t, http.StatusBadRequest, w.Code)
+		router.postOTLPTrace(w, request)
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
 		assert.Contains(t, w.Body.String(), "not found in list of authorized keys")
 
 		assert.Equal(t, 0, len(mockTransmission.Events))
 		mockTransmission.Flush()
 	})
 
+	t.Run("rejects bad API keys - gRPC", func(t *testing.T) {
+		router.Config.(*config.MockConfig).GetAccessKeyConfigVal = config.AccessKeyConfig{
+			ReceiveKeys:          []string{},
+			AcceptOnlyListedKeys: true,
+		}
+		req := &collectortrace.ExportTraceServiceRequest{
+			ResourceSpans: []*trace.ResourceSpans{{
+				ScopeSpans: []*trace.ScopeSpans{{
+					Spans: helperOTLPRequestSpansWithStatus(),
+				}},
+			}},
+		}
+		traceServer := NewTraceServer(router)
+		_, err := traceServer.Export(ctx, req)
+		assert.Equal(t, codes.Unauthenticated, status.Code(err))
+		assert.Contains(t, err.Error(), "not found in list of authorized keys")
+		assert.Equal(t, 0, len(mockTransmission.Events))
+		mockTransmission.Flush()
+	})
 }
 
 func helperOTLPRequestSpansWithoutStatus() []*trace.Span {
